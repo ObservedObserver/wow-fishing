@@ -27,6 +27,8 @@ from app.vision import BobberDetector, Detection, ModelManager
 _VK_1 = 0x31
 _VK_NUMPAD1 = 0x61
 _VK_ESC = 0x1B
+_LOCATE_CONFIRM_FRAMES = 3
+_LOCATE_CONFIRM_INTERVAL_MS = 25
 
 
 class KeyOneTrigger:
@@ -82,13 +84,93 @@ def _detect_near_anchor(
     x1 = min(w, anchor_x + radius)
     y1 = min(h, anchor_y + radius)
     if x1 - x0 < 16 or y1 - y0 < 16:
-        return vision.detect(frame)
+        return None
 
     roi = frame[y0:y1, x0:x1]
     det = vision.detect(roi)
     if det is None:
         return None
-    return Detection(x=det.x + x0, y=det.y + y0, conf=det.conf, source=det.source)
+    det_x = det.x + x0
+    det_y = det.y + y0
+    dx = det_x - anchor_x
+    dy = det_y - anchor_y
+    if dx * dx + dy * dy > radius * radius:
+        return None
+    return Detection(x=det_x, y=det_y, conf=det.conf, source=det.source)
+
+
+def _select_stable_detection(
+    detections: list[Detection],
+    anchor_x: int | None,
+    anchor_y: int | None,
+    radius: int,
+) -> Detection | None:
+    if len(detections) < 2:
+        return None
+    cluster_px = max(18, int(radius * 0.12)) if radius > 0 else 32
+    cluster_px2 = cluster_px * cluster_px
+    best_cluster: list[Detection] = []
+    for seed in detections:
+        cluster: list[Detection] = []
+        for cand in detections:
+            dx = cand.x - seed.x
+            dy = cand.y - seed.y
+            if dx * dx + dy * dy <= cluster_px2:
+                cluster.append(cand)
+        if len(cluster) > len(best_cluster):
+            best_cluster = cluster
+        elif len(cluster) == len(best_cluster):
+            if cluster and best_cluster:
+                if max(c.conf for c in cluster) > max(c.conf for c in best_cluster):
+                    best_cluster = cluster
+    if len(best_cluster) < 2:
+        return None
+
+    if anchor_x is None or anchor_y is None or radius <= 0:
+        return max(best_cluster, key=lambda d: d.conf)
+
+    def score(cand: Detection) -> float:
+        dx = cand.x - anchor_x
+        dy = cand.y - anchor_y
+        dist_ratio = ((dx * dx + dy * dy) ** 0.5) / max(1.0, float(radius))
+        return cand.conf - (0.20 * dist_ratio)
+
+    return max(best_cluster, key=score)
+
+
+def _locate_stable_near_anchor(
+    vision: BobberDetector,
+    capture: ScreenCapture,
+    anchor_x: int | None,
+    anchor_y: int | None,
+    radius: int,
+    confirm_frames: int = _LOCATE_CONFIRM_FRAMES,
+) -> tuple[Detection | None, int]:
+    detections: list[Detection] = []
+    samples = max(1, confirm_frames)
+    for i in range(samples):
+        shot = capture.grab_with_offset()
+        local_anchor_x = None if anchor_x is None else (anchor_x - shot.left)
+        local_anchor_y = None if anchor_y is None else (anchor_y - shot.top)
+        det = _detect_near_anchor(
+            vision=vision,
+            frame=shot.frame_bgr,
+            anchor_x=local_anchor_x,
+            anchor_y=local_anchor_y,
+            radius=radius,
+        )
+        if det is not None:
+            detections.append(
+                Detection(
+                    x=det.x + shot.left,
+                    y=det.y + shot.top,
+                    conf=det.conf,
+                    source=det.source,
+                )
+            )
+        if i + 1 < samples:
+            time.sleep(_LOCATE_CONFIRM_INTERVAL_MS / 1000.0)
+    return _select_stable_detection(detections, anchor_x, anchor_y, radius), len(detections)
 
 
 def command_download_model(cfg: AppConfig) -> None:
@@ -176,10 +258,9 @@ def command_run(cfg: AppConfig) -> None:
                 )
 
             if pending_locate_at_ms is not None and now_ms >= pending_locate_at_ms:
-                frame = capture.grab()
-                det = _detect_near_anchor(
+                det, hit_count = _locate_stable_near_anchor(
                     vision=vision,
-                    frame=frame,
+                    capture=capture,
                     anchor_x=cast_anchor_x,
                     anchor_y=cast_anchor_y,
                     radius=cfg.vision.key_search_radius,
@@ -191,9 +272,11 @@ def command_run(cfg: AppConfig) -> None:
                 )
                 if accepted and det is not None:
                     moved_x, moved_y = mouse.move_to(det.x, det.y)
+                    cast_anchor_x, cast_anchor_y = moved_x, moved_y
                     print(
                         f"[key-move] moved to ({moved_x}, {moved_y}) "
-                        f"conf={det.conf:.3f} source={det.source} attempt={pending_locate_attempt}"
+                        f"conf={det.conf:.3f} source={det.source} attempt={pending_locate_attempt} "
+                        f"hits={hit_count}/{_LOCATE_CONFIRM_FRAMES}"
                     )
                     pending_locate_at_ms = None
                     pending_locate_attempt = 0
@@ -205,10 +288,14 @@ def command_run(cfg: AppConfig) -> None:
                         print(
                             f"[key-move] detect failed, retry {pending_locate_attempt}/"
                             f"{cfg.timing.key_retry_max_attempts} in "
-                            f"{cfg.timing.key_retry_interval_ms}ms"
+                            f"{cfg.timing.key_retry_interval_ms}ms "
+                            f"(hits={hit_count}/{_LOCATE_CONFIRM_FRAMES})"
                         )
                     else:
-                        print("[key-move] detect failed after max retries")
+                        print(
+                            "[key-move] detect failed after max retries "
+                            f"(hits={hit_count}/{_LOCATE_CONFIRM_FRAMES})"
+                        )
                         pending_locate_at_ms = None
                         pending_locate_attempt = 0
                         bobber_tracked = False
@@ -227,6 +314,26 @@ def command_run(cfg: AppConfig) -> None:
                 and audio_event is not None
                 and (now_ms - last_sound_click_ms) >= cfg.audio.bite_lock_ms
             ):
+                # Final near-field check before clicking to reduce stale-lock errors.
+                current_x, current_y = mouse.get_position()
+                near_det, near_hits = _locate_stable_near_anchor(
+                    vision=vision,
+                    capture=capture,
+                    anchor_x=current_x,
+                    anchor_y=current_y,
+                    radius=max(60, int(cfg.vision.key_search_radius * 0.22)),
+                    confirm_frames=2,
+                )
+                if near_det is not None and (
+                    near_det.source != "fallback" or cfg.vision.allow_fallback_for_action
+                ):
+                    moved_x, moved_y = mouse.move_to(near_det.x, near_det.y)
+                    cast_anchor_x, cast_anchor_y = moved_x, moved_y
+                    print(
+                        f"[pre-click] refined to ({moved_x}, {moved_y}) "
+                        f"conf={near_det.conf:.3f} source={near_det.source} hits={near_hits}/2"
+                    )
+
                 low = min(cfg.control.click_delay_min_ms, cfg.control.click_delay_max_ms)
                 high = max(cfg.control.click_delay_min_ms, cfg.control.click_delay_max_ms)
                 delay_ms = random.randint(max(0, low), max(0, high))
@@ -277,8 +384,8 @@ def command_mouse_test(cfg: AppConfig, seconds: int) -> None:
                 time.sleep(frame_interval_s)
                 continue
 
-            frame = capture.grab()
-            det = vision.detect(frame)
+            shot = capture.grab_with_offset()
+            det = vision.detect(shot.frame_bgr)
             if det is None:
                 print("[mouse-test] bite detected but no visual target")
                 last_bite_ms = audio_event.ts_ms
@@ -297,7 +404,9 @@ def command_mouse_test(cfg: AppConfig, seconds: int) -> None:
             high = max(cfg.control.click_delay_min_ms, cfg.control.click_delay_max_ms)
             delay_ms = random.randint(max(0, low), max(0, high))
             time.sleep(delay_ms / 1000.0)
-            moved_x, moved_y = mouse.move_to(det.x, det.y)
+            abs_x = det.x + shot.left
+            abs_y = det.y + shot.top
+            moved_x, moved_y = mouse.move_to(abs_x, abs_y)
             print(
                 f"[mouse-test] moved to ({moved_x}, {moved_y}) "
                 f"after {delay_ms}ms conf={det.conf:.3f} source={det.source}"
@@ -339,8 +448,8 @@ def command_listen_test(cfg: AppConfig, seconds: int) -> None:
                 f"[audio] ts={audio_event.ts_ms}ms rms={audio_event.energy:.4f} "
                 f"th={audio_event.threshold:.4f}"
             )
-            frame = capture.grab()
-            det = vision.detect(frame)
+            shot = capture.grab_with_offset()
+            det = vision.detect(shot.frame_bgr)
             if det is None:
                 print("[vision] no target")
             else:
@@ -352,8 +461,10 @@ def command_listen_test(cfg: AppConfig, seconds: int) -> None:
                     last_bite_ms = audio_event.ts_ms
                     time.sleep(frame_interval_s)
                     continue
+                abs_x = det.x + shot.left
+                abs_y = det.y + shot.top
                 print(
-                    f"[vision] x={det.x} y={det.y} conf={det.conf:.3f} source={det.source}"
+                    f"[vision] x={abs_x} y={abs_y} conf={det.conf:.3f} source={det.source}"
                 )
             last_bite_ms = audio_event.ts_ms
             time.sleep(frame_interval_s)
@@ -490,4 +601,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -60,8 +60,6 @@ class BobberDetector:
         self.last_template_score: float = 0.0
 
     def load(self) -> None:
-        manager = ModelManager(self.cfg)
-        model_path = manager.ensure_model()
         self._templates_gray = []
         self._templates_lab_ab = []
         if cv2 is not None:
@@ -96,11 +94,25 @@ class BobberDetector:
                 tpl_lab = cv2.cvtColor(tpl_bgr, cv2.COLOR_BGR2LAB)
                 self._templates_gray.append(tpl_gray)
                 self._templates_lab_ab.append((tpl_lab[:, :, 1], tpl_lab[:, :, 2]))
+        if self._templates_gray:
+            print(f"[vision] loaded templates: {len(self._templates_gray)}")
+        elif self.cfg.template_dir or self.cfg.template_paths:
+            print("[vision] warning: template configured but no valid template image was loaded")
+
         if ort is None or cv2 is None:
             self._fallback_only = True
             return
-        self._session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
-        self._input_name = self._session.get_inputs()[0].name
+
+        manager = ModelManager(self.cfg)
+        try:
+            model_path = manager.ensure_model()
+            self._session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+            self._input_name = self._session.get_inputs()[0].name
+        except Exception as exc:
+            # Keep template/hsv path available even if model is unavailable.
+            self._session = None
+            self._input_name = None
+            print(f"[vision] warning: model unavailable, continue without ONNX ({exc})")
 
     def detect(self, frame_bgr: np.ndarray) -> Detection | None:
         if self.cfg.roi:
@@ -109,7 +121,7 @@ class BobberDetector:
             det = self._detect_core(roi)
             if det is None:
                 return None
-            return Detection(x=det.x + x, y=det.y + y, conf=det.conf)
+            return Detection(x=det.x + x, y=det.y + y, conf=det.conf, source=det.source)
         return self._detect_core(frame_bgr)
 
     def _detect_core(self, frame_bgr: np.ndarray) -> Detection | None:
@@ -135,6 +147,7 @@ class BobberDetector:
         frame_b = lab[:, :, 2]
         best: Detection | None = None
         best_score = 0.0
+        candidates: list[Detection] = []
         gray_w = max(0.0, float(self.cfg.template_gray_weight))
         color_w = max(0.0, float(self.cfg.template_color_weight)) if self.cfg.template_use_color else 0.0
         if gray_w == 0.0 and color_w == 0.0:
@@ -177,9 +190,26 @@ class BobberDetector:
                 x = int(max_loc[0] + tw / 2)
                 y = int(max_loc[1] + th / 2)
                 cand = Detection(x=x, y=y, conf=score, source="template")
+                candidates.append(cand)
                 if best is None or cand.conf > best.conf:
                     best = cand
         self.last_template_score = best_score
+        if best is None:
+            return None
+
+        # If two distant peaks are nearly tied, the scene is ambiguous.
+        rival_conf = 0.0
+        rival_min_dist = max(24, int(min(gray.shape[0], gray.shape[1]) * 0.05))
+        rival_min_dist2 = rival_min_dist * rival_min_dist
+        for cand in candidates:
+            dx = cand.x - best.x
+            dy = cand.y - best.y
+            if dx * dx + dy * dy < rival_min_dist2:
+                continue
+            if cand.conf > rival_conf:
+                rival_conf = cand.conf
+        if rival_conf > 0.0 and (best.conf - rival_conf) < 0.02:
+            return None
         return best
 
     def _detect_onnx(self, frame_bgr: np.ndarray) -> Detection | None:
@@ -245,4 +275,3 @@ class BobberDetector:
         y = int(m["m01"] / m["m00"])
         conf = min(0.85, 0.25 + area / max(200.0, self.cfg.fallback_max_area))
         return Detection(x=x, y=y, conf=conf, source="fallback")
-
