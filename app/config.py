@@ -27,8 +27,8 @@ class TimingConfig:
     key_retry_max_attempts: int = 3
     recast_on_miss: bool = True
     recast_miss_delay_ms: int = 300
-    auto_cast_base_ms: int = 5_000
-    auto_cast_jitter_max_ms: int = 1_000
+    auto_cast_base_ms: int = 4_000
+    auto_cast_jitter_max_ms: int = 1_500
     auto_cast_initial_delay_ms: int = 500
     ignore_after_cast_ms: int = 900
     bite_window_start_ms: int = 4_000
@@ -118,4 +118,3 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         vision=VisionConfig(**merged["vision"]),
         control=ControlConfig(**merged["control"]),
     )
-
