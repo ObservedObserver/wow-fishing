@@ -27,8 +27,8 @@ from app.vision import BobberDetector, Detection, ModelManager
 _VK_1 = 0x31
 _VK_NUMPAD1 = 0x61
 _VK_ESC = 0x1B
-_LOCATE_CONFIRM_FRAMES = 3
-_LOCATE_CONFIRM_INTERVAL_MS = 25
+_LOCATE_CONFIRM_FRAMES = 1
+_LOCATE_CONFIRM_INTERVAL_MS = 0
 
 
 class KeyOneTrigger:
@@ -84,7 +84,8 @@ def _detect_near_anchor(
     x1 = min(w, anchor_x + radius)
     y1 = min(h, anchor_y + radius)
     if x1 - x0 < 16 or y1 - y0 < 16:
-        return None
+        # If anchor falls outside the captured monitor, keep old full-frame fallback behavior.
+        return vision.detect(frame)
 
     roi = frame[y0:y1, x0:x1]
     det = vision.detect(roi)
@@ -105,7 +106,7 @@ def _select_stable_detection(
     anchor_y: int | None,
     radius: int,
 ) -> Detection | None:
-    if len(detections) < 2:
+    if not detections:
         return None
     cluster_px = max(18, int(radius * 0.12)) if radius > 0 else 32
     cluster_px2 = cluster_px * cluster_px
@@ -123,11 +124,10 @@ def _select_stable_detection(
             if cluster and best_cluster:
                 if max(c.conf for c in cluster) > max(c.conf for c in best_cluster):
                     best_cluster = cluster
-    if len(best_cluster) < 2:
-        return None
 
+    pool = best_cluster if len(best_cluster) >= 2 else detections
     if anchor_x is None or anchor_y is None or radius <= 0:
-        return max(best_cluster, key=lambda d: d.conf)
+        return max(pool, key=lambda d: d.conf)
 
     def score(cand: Detection) -> float:
         dx = cand.x - anchor_x
@@ -135,7 +135,7 @@ def _select_stable_detection(
         dist_ratio = ((dx * dx + dy * dy) ** 0.5) / max(1.0, float(radius))
         return cand.conf - (0.20 * dist_ratio)
 
-    return max(best_cluster, key=score)
+    return max(pool, key=score)
 
 
 def _locate_stable_near_anchor(
@@ -314,26 +314,6 @@ def command_run(cfg: AppConfig) -> None:
                 and audio_event is not None
                 and (now_ms - last_sound_click_ms) >= cfg.audio.bite_lock_ms
             ):
-                # Final near-field check before clicking to reduce stale-lock errors.
-                current_x, current_y = mouse.get_position()
-                near_det, near_hits = _locate_stable_near_anchor(
-                    vision=vision,
-                    capture=capture,
-                    anchor_x=current_x,
-                    anchor_y=current_y,
-                    radius=max(60, int(cfg.vision.key_search_radius * 0.22)),
-                    confirm_frames=2,
-                )
-                if near_det is not None and (
-                    near_det.source != "fallback" or cfg.vision.allow_fallback_for_action
-                ):
-                    moved_x, moved_y = mouse.move_to(near_det.x, near_det.y)
-                    cast_anchor_x, cast_anchor_y = moved_x, moved_y
-                    print(
-                        f"[pre-click] refined to ({moved_x}, {moved_y}) "
-                        f"conf={near_det.conf:.3f} source={near_det.source} hits={near_hits}/2"
-                    )
-
                 low = min(cfg.control.click_delay_min_ms, cfg.control.click_delay_max_ms)
                 high = max(cfg.control.click_delay_min_ms, cfg.control.click_delay_max_ms)
                 delay_ms = random.randint(max(0, low), max(0, high))

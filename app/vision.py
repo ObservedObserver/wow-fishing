@@ -147,7 +147,6 @@ class BobberDetector:
         frame_b = lab[:, :, 2]
         best: Detection | None = None
         best_score = 0.0
-        candidates: list[Detection] = []
         gray_w = max(0.0, float(self.cfg.template_gray_weight))
         color_w = max(0.0, float(self.cfg.template_color_weight)) if self.cfg.template_use_color else 0.0
         if gray_w == 0.0 and color_w == 0.0:
@@ -190,26 +189,9 @@ class BobberDetector:
                 x = int(max_loc[0] + tw / 2)
                 y = int(max_loc[1] + th / 2)
                 cand = Detection(x=x, y=y, conf=score, source="template")
-                candidates.append(cand)
                 if best is None or cand.conf > best.conf:
                     best = cand
         self.last_template_score = best_score
-        if best is None:
-            return None
-
-        # If two distant peaks are nearly tied, the scene is ambiguous.
-        rival_conf = 0.0
-        rival_min_dist = max(24, int(min(gray.shape[0], gray.shape[1]) * 0.05))
-        rival_min_dist2 = rival_min_dist * rival_min_dist
-        for cand in candidates:
-            dx = cand.x - best.x
-            dy = cand.y - best.y
-            if dx * dx + dy * dy < rival_min_dist2:
-                continue
-            if cand.conf > rival_conf:
-                rival_conf = cand.conf
-        if rival_conf > 0.0 and (best.conf - rival_conf) < 0.02:
-            return None
         return best
 
     def _detect_onnx(self, frame_bgr: np.ndarray) -> Detection | None:
