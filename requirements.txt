@@ -1,0 +1,10 @@
+numpy>=2.0.0
+Pillow>=10.0.0
+mss>=9.0.1
+PyYAML>=6.0.1
+requests>=2.32.0
+pytest>=8.3.0
+opencv-python>=4.13.0
+onnxruntime>=1.24.0
+sounddevice>=0.5.5
+soundcard>=0.4.5
