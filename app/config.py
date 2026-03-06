@@ -60,6 +60,7 @@ class VisionConfig:
     ignore_bottom_ratio: float = 0.18
     allow_fallback_for_action: bool = False
     key_search_radius: int = 520
+    onnx_window_crop_size: int = 1280
     roi: tuple[int, int, int, int] | None = None
     debug_save_model_input: bool = False
 

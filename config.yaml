@@ -44,6 +44,7 @@ vision:
   ignore_bottom_ratio: 0.18
   allow_fallback_for_action: false
   key_search_radius: 520
+  onnx_window_crop_size: 1280
   roi: null
   debug_save_model_input: true
 
