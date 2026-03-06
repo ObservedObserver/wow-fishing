@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -58,6 +60,7 @@ class BobberDetector:
         self._templates_gray: list[np.ndarray] = []
         self._templates_lab_ab: list[tuple[np.ndarray, np.ndarray]] = []
         self.last_template_score: float = 0.0
+        self._debug_save_counter: int = 0
 
     def load(self) -> None:
         self._templates_gray = []
@@ -142,9 +145,12 @@ class BobberDetector:
         if 0 < crop_h < frame_bgr.shape[0]:
             work = frame_bgr[:crop_h, :]
         if not self._fallback_only and self._session is not None and cv2 is not None:
+            print("[vision] attempting model (ONNX) detection first")
             det = self._detect_onnx(work, preferred_x=preferred_x, preferred_y=preferred_y)
             if det is not None:
+                print(f"[vision] model detection result: conf={det.conf:.3f} x={det.x} y={det.y} source={det.source}")
                 return det
+            print("[vision] model detection returned None (conf below threshold or no candidates), falling through")
         if cv2 is not None and self._templates_gray:
             det = self._detect_template(work)
             if det is not None:
@@ -225,6 +231,10 @@ class BobberDetector:
             return None
 
         preds = output[0].T
+        x_scale = src_w / size
+        y_scale = src_h / size
+
+        all_bboxes: list[tuple[int, int, int, int, float]] = []
         candidates: list[dict[str, float | int]] = []
 
         for row in preds:
@@ -232,13 +242,6 @@ class BobberDetector:
             cls_scores = row[4:]
             cls_id = int(np.argmax(cls_scores))
             conf = float(cls_scores[cls_id])
-            if self._enabled_classes and cls_id not in self._enabled_classes:
-                continue
-            if conf < self.cfg.conf_threshold:
-                continue
-
-            x_scale = src_w / size
-            y_scale = src_h / size
             x = float(cx * x_scale)
             y = float(cy * y_scale)
             bw = float(w * x_scale)
@@ -247,6 +250,11 @@ class BobberDetector:
             y1 = max(0.0, y - (bh / 2.0))
             x2 = min(float(src_w - 1), x + (bw / 2.0))
             y2 = min(float(src_h - 1), y + (bh / 2.0))
+            all_bboxes.append((int(x1), int(y1), int(x2), int(y2), conf))
+            if self._enabled_classes and cls_id not in self._enabled_classes:
+                continue
+            if conf < self.cfg.conf_threshold:
+                continue
             candidates.append(
                 {
                     "x": x,
@@ -259,7 +267,11 @@ class BobberDetector:
                 }
             )
 
+        if self.cfg.debug_save_model_input and cv2 is not None:
+            self._debug_save_model_input(frame_bgr, all_bboxes)
+
         if not candidates:
+            print(f"[vision] model ran but no candidates above conf_threshold={self.cfg.conf_threshold}")
             return None
 
         kept = self._nms(candidates, iou_threshold=0.45)
@@ -343,6 +355,37 @@ class BobberDetector:
         if union <= 0.0:
             return 0.0
         return inter_area / union
+
+    def _debug_save_model_input(
+        self,
+        frame_bgr: np.ndarray,
+        all_bboxes: list[tuple[int, int, int, int, float]],
+    ) -> None:
+        if cv2 is None:
+            return
+        debug_dir = Path(tempfile.gettempdir()) / "fishing_model_debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        self._debug_save_counter += 1
+        ts = int(time.monotonic() * 1000)
+        img_copy = frame_bgr.copy()
+        top_bboxes = sorted(all_bboxes, key=lambda bbox: bbox[4], reverse=True)[:3]
+        for x1, y1, x2, y2, conf in top_bboxes:
+            cv2.rectangle(img_copy, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(
+                img_copy,
+                f"{conf:.2f}",
+                (x1, y1 - 4),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 0),
+                1,
+            )
+        path = debug_dir / f"model_input_{self._debug_save_counter:06d}_{ts}.png"
+        cv2.imwrite(str(path), img_copy)
+        print(
+            f"[vision] debug: saved model input with top {len(top_bboxes)}/{len(all_bboxes)} "
+            f"bboxes to {path}"
+        )
 
     def _detect_hsv_fallback(self, frame_bgr: np.ndarray) -> Detection | None:
         if cv2 is None:
