@@ -3,7 +3,6 @@ import numpy as np
 from app.vision import Detection
 from app.capture import CaptureFrame
 from main import (
-    _crop_frame_around_point,
     _detect_near_anchor,
     _locate_stable_near_anchor,
     _select_stable_detection,
@@ -139,21 +138,6 @@ def test_locate_uses_full_window_for_onnx_before_template_roi() -> None:
     assert vision.template_frames == []
     assert capture.window_calls == 1
     assert capture.monitor_calls == 0
-
-
-def test_crop_frame_around_point_limits_large_window_for_onnx() -> None:
-    frame = np.zeros((2160, 3840, 3), dtype=np.uint8)
-
-    x0, y0, cropped = _crop_frame_around_point(
-        frame,
-        center_x=2000,
-        center_y=1000,
-        crop_size=1280,
-    )
-
-    assert (x0, y0) == (1360, 360)
-    assert cropped.shape[:2] == (1280, 1280)
-
 
 def test_locate_falls_back_to_template_roi_when_onnx_misses() -> None:
     vision = _FakeVision(

@@ -109,62 +109,12 @@ def _detect_onnx_in_window(
     frame: np.ndarray,
     anchor_x: int | None,
     anchor_y: int | None,
-    crop_size: int,
     radius: int,
 ) -> Detection | None:
-    crop_x0, crop_y0, crop = _crop_frame_around_point(
-        frame,
-        center_x=anchor_x,
-        center_y=anchor_y,
-        crop_size=crop_size,
-    )
-    local_anchor_x = None if anchor_x is None else anchor_x - crop_x0
-    local_anchor_y = None if anchor_y is None else anchor_y - crop_y0
-
-    if local_anchor_x is None or local_anchor_y is None or radius <= 0:
-        det = vision.detect_onnx_only(crop)
-        if det is None:
-            return None
-        return Detection(x=det.x + crop_x0, y=det.y + crop_y0, conf=det.conf, source=det.source)
-
-    det = vision.detect_onnx_only(
-        crop,
-        preferred_x=local_anchor_x,
-        preferred_y=local_anchor_y,
-    )
-    if det is None:
-        return None
-    det_x = det.x + crop_x0
-    det_y = det.y + crop_y0
-    dx = det_x - anchor_x
-    dy = det_y - anchor_y
-    if dx * dx + dy * dy > radius * radius:
-        return None
-    return Detection(x=det_x, y=det_y, conf=det.conf, source=det.source)
-
-
-def _crop_frame_around_point(
-    frame: np.ndarray,
-    center_x: int | None,
-    center_y: int | None,
-    crop_size: int,
-) -> tuple[int, int, np.ndarray]:
-    h, w = frame.shape[:2]
-    if crop_size <= 0 or center_x is None or center_y is None:
-        return 0, 0, frame
-
-    crop_w = min(w, crop_size)
-    crop_h = min(h, crop_size)
-    if crop_w >= w and crop_h >= h:
-        return 0, 0, frame
-
-    half_w = crop_w // 2
-    half_h = crop_h // 2
-    x0 = max(0, min(w - crop_w, center_x - half_w))
-    y0 = max(0, min(h - crop_h, center_y - half_h))
-    x1 = x0 + crop_w
-    y1 = y0 + crop_h
-    return x0, y0, frame[y0:y1, x0:x1]
+    del anchor_x
+    del anchor_y
+    del radius
+    return vision.detect_onnx_only(frame)
 
 def _select_stable_detection(
     detections: list[Detection],
@@ -210,7 +160,6 @@ def _locate_stable_near_anchor(
     anchor_x: int | None,
     anchor_y: int | None,
     radius: int,
-    onnx_crop_size: int = 1280,
     confirm_frames: int = _LOCATE_CONFIRM_FRAMES,
 ) -> tuple[Detection | None, int]:
     detections: list[Detection] = []
@@ -227,7 +176,6 @@ def _locate_stable_near_anchor(
                 frame=model_shot.frame_bgr,
                 anchor_x=model_anchor_x,
                 anchor_y=model_anchor_y,
-                crop_size=onnx_crop_size,
                 radius=radius,
             )
             if model_det is not None:
@@ -355,7 +303,6 @@ def command_run(cfg: AppConfig) -> None:
                     anchor_x=cast_anchor_x,
                     anchor_y=cast_anchor_y,
                     radius=cfg.vision.key_search_radius,
-                    onnx_crop_size=cfg.vision.onnx_window_crop_size,
                 )
 
                 accepted = (

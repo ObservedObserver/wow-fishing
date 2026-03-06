@@ -46,6 +46,34 @@ class ModelManager:
         return model_path
 
 
+def _crop_onnx_frame(
+    frame_bgr: np.ndarray,
+    left_ratio: float,
+    right_ratio: float,
+    top_ratio: float,
+    bottom_ratio: float,
+) -> tuple[np.ndarray, int, int]:
+    h, w = frame_bgr.shape[:2]
+    if h <= 0 or w <= 0:
+        return frame_bgr, 0, 0
+
+    def _clamp_ratio(value: float) -> float:
+        return min(0.45, max(0.0, float(value)))
+
+    left_px = int(round(w * _clamp_ratio(left_ratio)))
+    right_px = int(round(w * _clamp_ratio(right_ratio)))
+    top_px = int(round(h * _clamp_ratio(top_ratio)))
+    bottom_px = int(round(h * _clamp_ratio(bottom_ratio)))
+
+    x0 = min(max(0, left_px), max(0, w - 16))
+    y0 = min(max(0, top_px), max(0, h - 16))
+    x1 = max(x0 + 16, min(w, w - right_px))
+    y1 = max(y0 + 16, min(h, h - bottom_px))
+    if x1 - x0 < 16 or y1 - y0 < 16:
+        return frame_bgr, 0, 0
+    return frame_bgr[y0:y1, x0:x1], x0, y0
+
+
 class BobberDetector:
     """
     ONNX detector first; HSV fallback if runtime packages unavailable.
@@ -278,7 +306,14 @@ class BobberDetector:
         preferred_y: int | None = None,
     ) -> Detection | None:
         assert self._session is not None and self._input_name is not None and cv2 is not None
-        image = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        cropped_bgr, crop_x0, crop_y0 = _crop_onnx_frame(
+            frame_bgr,
+            left_ratio=self.cfg.onnx_crop_left_ratio,
+            right_ratio=self.cfg.onnx_crop_right_ratio,
+            top_ratio=self.cfg.onnx_crop_top_ratio,
+            bottom_ratio=self.cfg.onnx_crop_bottom_ratio,
+        )
+        image = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB)
         src_h, src_w = image.shape[:2]
         size = self.cfg.input_size
         resized = cv2.resize(image, (size, size), interpolation=cv2.INTER_LINEAR)
@@ -294,6 +329,7 @@ class BobberDetector:
         y_scale = src_h / size
         all_bboxes: list[tuple[int, int, int, int, float]] = []
         candidates: list[dict[str, float | int]] = []
+        all_class_candidates: list[dict[str, float | int]] = []
 
         for row in preds:
             cx, cy, w, h = row[0:4]
@@ -311,43 +347,59 @@ class BobberDetector:
             all_bboxes.append((int(x1), int(y1), int(x2), int(y2), conf))
             if self._enabled_classes and cls_id not in self._enabled_classes:
                 continue
+            candidate = {
+                "x": x,
+                "y": y,
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+                "conf": conf,
+            }
+            all_class_candidates.append(candidate)
             if conf < self.cfg.conf_threshold:
                 continue
-            candidates.append(
-                {
-                    "x": x,
-                    "y": y,
-                    "x1": x1,
-                    "y1": y1,
-                    "x2": x2,
-                    "y2": y2,
-                    "conf": conf,
-                }
-            )
+            candidates.append(candidate)
 
         if self.cfg.debug_save_model_input:
-            self._debug_save_model_input(frame_bgr, all_bboxes)
+            self._debug_save_model_input(cropped_bgr, all_bboxes)
 
-        if not candidates:
-            print(f"[vision] ONNX ran but no candidates above conf_threshold={self.cfg.conf_threshold}")
+        selected_candidates = candidates
+        if not selected_candidates and self.cfg.onnx_force_top1 and all_class_candidates:
+            print(
+                f"[vision] ONNX had no candidates above conf_threshold={self.cfg.conf_threshold}, "
+                "falling back to top1 candidate"
+            )
+            selected_candidates = all_class_candidates
+
+        if not selected_candidates:
+            print(f"[vision] ONNX ran but no candidates for enabled classes above conf_threshold={self.cfg.conf_threshold}")
             return None
 
-        kept = self._nms(candidates, iou_threshold=0.45)
+        kept = self._nms(selected_candidates, iou_threshold=0.45)
         best = max(
             kept,
             key=lambda cand: self._candidate_score(
                 int(cand["x"]),
                 int(cand["y"]),
                 float(cand["conf"]),
-                preferred_x=preferred_x,
-                preferred_y=preferred_y,
+                preferred_x=(
+                    None
+                    if not self.cfg.onnx_use_preferred_anchor or preferred_x is None
+                    else preferred_x - crop_x0
+                ),
+                preferred_y=(
+                    None
+                    if not self.cfg.onnx_use_preferred_anchor or preferred_y is None
+                    else preferred_y - crop_y0
+                ),
                 frame_w=src_w,
                 frame_h=src_h,
             ),
         )
         return Detection(
-            x=int(best["x"]),
-            y=int(best["y"]),
+            x=int(best["x"]) + crop_x0,
+            y=int(best["y"]) + crop_y0,
             conf=float(best["conf"]),
             source="onnx",
         )
