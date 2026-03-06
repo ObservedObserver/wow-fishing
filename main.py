@@ -212,6 +212,40 @@ def _locate_stable_near_anchor(
     return _select_stable_detection(detections, anchor_x, anchor_y, radius), len(detections)
 
 
+def _clear_lingering_bobber_before_cast(
+    vision: BobberDetector,
+    capture: ScreenCapture,
+    mouse: MouseController,
+    anchor_x: int | None,
+    anchor_y: int | None,
+    radius: int,
+) -> tuple[bool, int | None, int | None]:
+    if anchor_x is None or anchor_y is None or radius <= 0:
+        return False, anchor_x, anchor_y
+
+    shot = capture.grab_with_offset(preferred_x=anchor_x, preferred_y=anchor_y)
+    local_anchor_x = anchor_x - shot.left
+    local_anchor_y = anchor_y - shot.top
+    det = _detect_near_anchor(
+        vision=vision,
+        frame=shot.frame_bgr,
+        anchor_x=local_anchor_x,
+        anchor_y=local_anchor_y,
+        radius=radius,
+    )
+    if det is None:
+        return False, anchor_x, anchor_y
+
+    abs_x = det.x + shot.left
+    abs_y = det.y + shot.top
+    moved_x, moved_y = mouse.move_and_right_click(abs_x, abs_y)
+    print(
+        f"[precast-cleanup] clicked lingering bobber at ({moved_x}, {moved_y}) "
+        f"conf={det.conf:.3f} source={det.source}"
+    )
+    return True, moved_x, moved_y
+
+
 def command_download_model(cfg: AppConfig) -> None:
     manager = ModelManager(cfg.vision)
     path = manager.ensure_model()
@@ -252,6 +286,7 @@ def command_run(cfg: AppConfig) -> None:
     cast_anchor_y: int | None = None
     bobber_tracked = False
     auto_enabled = False
+    needs_precast_cleanup = False
 
     def schedule_next_cast(now_ms: int, reason: str, extra_ms: int) -> None:
         nonlocal next_cast_at_ms
@@ -268,6 +303,7 @@ def command_run(cfg: AppConfig) -> None:
                 pending_locate_at_ms = None
                 pending_locate_attempt = 0
                 bobber_tracked = False
+                needs_precast_cleanup = False
                 print("[loop] paused by ESC")
 
             if key_trigger.poll_pressed_edge():
@@ -278,6 +314,7 @@ def command_run(cfg: AppConfig) -> None:
                 pending_locate_attempt = 1
                 cast_anchor_x, cast_anchor_y = mouse.get_position()
                 bobber_tracked = False
+                needs_precast_cleanup = False
                 next_cast_at_ms = None
                 print(
                     f"[key] detected 1 at ({cast_anchor_x}, {cast_anchor_y}), "
@@ -285,12 +322,31 @@ def command_run(cfg: AppConfig) -> None:
                 )
 
             if auto_enabled and next_cast_at_ms is not None and now_ms >= next_cast_at_ms:
+                if needs_precast_cleanup:
+                    cleaned, cleaned_x, cleaned_y = _clear_lingering_bobber_before_cast(
+                        vision=vision,
+                        capture=capture,
+                        mouse=mouse,
+                        anchor_x=cast_anchor_x,
+                        anchor_y=cast_anchor_y,
+                        radius=cfg.vision.key_search_radius,
+                    )
+                    needs_precast_cleanup = False
+                    if cleaned:
+                        cast_anchor_x, cast_anchor_y = cleaned_x, cleaned_y
+                        schedule_next_cast(
+                            now_ms=now_ms,
+                            reason="precast_cleanup",
+                            extra_ms=cfg.timing.precast_cleanup_delay_ms,
+                        )
+                        continue
                 mouse.press_key_1()
                 cast_anchor_x, cast_anchor_y = mouse.get_position()
                 pending_locate_at_ms = now_ms + cfg.timing.key_detect_delay_ms
                 pending_locate_attempt = 1
                 next_cast_at_ms = None
                 bobber_tracked = False
+                needs_precast_cleanup = False
                 print(
                     f"[cast] key1 triggered at ({cast_anchor_x}, {cast_anchor_y}), "
                     f"locate in {cfg.timing.key_detect_delay_ms}ms"
@@ -338,6 +394,7 @@ def command_run(cfg: AppConfig) -> None:
                         pending_locate_at_ms = None
                         pending_locate_attempt = 0
                         bobber_tracked = False
+                        needs_precast_cleanup = False
                         if cfg.timing.recast_on_miss:
                             if auto_enabled:
                                 schedule_next_cast(
@@ -364,6 +421,7 @@ def command_run(cfg: AppConfig) -> None:
                 mouse.right_click()
                 last_sound_click_ms = int(time.monotonic() * 1000)
                 bobber_tracked = False
+                needs_precast_cleanup = True
                 if auto_enabled:
                     schedule_next_cast(
                         now_ms=last_sound_click_ms,

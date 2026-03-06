@@ -19,6 +19,7 @@ timing:
   auto_cast_jitter_max_ms: 1500
   auto_cast_initial_delay_ms: 500
   ignore_after_cast_ms: 900
+  precast_cleanup_delay_ms: 900
   bite_window_start_ms: 4000
   bite_window_end_ms: 26000
   click_cooldown_ms: 1200

@@ -3,6 +3,7 @@ import numpy as np
 from app.vision import Detection
 from app.capture import CaptureFrame
 from main import (
+    _clear_lingering_bobber_before_cast,
     _detect_near_anchor,
     _locate_stable_near_anchor,
     _select_stable_detection,
@@ -89,6 +90,15 @@ class _FakeCapture:
         return CaptureFrame(frame_bgr=np.zeros((h, w, 3), dtype=np.uint8), left=0, top=0)
 
 
+class _FakeMouse:
+    def __init__(self) -> None:
+        self.clicked: list[tuple[int, int]] = []
+
+    def move_and_right_click(self, x: int, y: int) -> tuple[int, int]:
+        self.clicked.append((x, y))
+        return x, y
+
+
 def test_detect_near_anchor_rejects_outside_circle() -> None:
     frame = np.zeros((200, 200, 3), dtype=np.uint8)
     # This maps to local (80, 80) in ROI and is outside radius=80 from (100,100).
@@ -162,3 +172,26 @@ def test_locate_falls_back_to_template_roi_when_onnx_misses() -> None:
     assert vision.template_frames == [(240, 240)]
     assert capture.window_calls == 1
     assert capture.monitor_calls == 1
+
+
+def test_precast_cleanup_clicks_lingering_bobber() -> None:
+    vision = _FakeVision(
+        onnx_det=None,
+        template_det=Detection(x=140, y=150, conf=0.7, source="template"),
+        has_onnx=True,
+    )
+    capture = _FakeCapture(window_shape=(600, 800), monitor_shape=(1080, 1920))
+    mouse = _FakeMouse()
+
+    cleaned, x, y = _clear_lingering_bobber_before_cast(
+        vision=vision,  # type: ignore[arg-type]
+        capture=capture,  # type: ignore[arg-type]
+        mouse=mouse,  # type: ignore[arg-type]
+        anchor_x=120,
+        anchor_y=130,
+        radius=120,
+    )
+
+    assert cleaned is True
+    assert (x, y) == (140, 160)
+    assert mouse.clicked == [(140, 160)]
