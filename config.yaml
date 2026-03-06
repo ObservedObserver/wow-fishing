@@ -56,7 +56,7 @@ vision:
   onnx_crop_top_ratio: 0.00
   onnx_crop_bottom_ratio: 0.12
   roi: null
-  debug_save_model_input: true
+  debug_save_model_input: false
 
 control:
   move_duration_ms: 35
