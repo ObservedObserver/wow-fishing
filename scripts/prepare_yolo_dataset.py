@@ -130,6 +130,63 @@ def _normalize_external_label_file(path: Path) -> list[str]:
     return label_lines
 
 
+def collect_external_coco_records() -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    image_exts = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+    for anno_path in sorted(EXTERNAL_ROOT.glob("**/_annotations.coco.json")):
+        payload = json.loads(anno_path.read_text(encoding="utf-8"))
+        categories = {
+            int(cat["id"]): str(cat["name"]).strip().lower()
+            for cat in payload.get("categories", [])
+        }
+        image_by_id = {
+            int(image["id"]): image
+            for image in payload.get("images", [])
+        }
+        annotations_by_image: dict[int, list[dict[str, Any]]] = {}
+        for ann in payload.get("annotations", []):
+            image_id = int(ann.get("image_id", -1))
+            annotations_by_image.setdefault(image_id, []).append(ann)
+
+        source_name = anno_path.parents[1].name
+        split_name = anno_path.parent.name
+        for image_id, image in image_by_id.items():
+            file_name = str(image.get("file_name", ""))
+            image_path = anno_path.parent / file_name
+            if image_path.suffix.lower() not in image_exts or not image_path.exists():
+                continue
+
+            image_w = int(image.get("width", 0))
+            image_h = int(image.get("height", 0))
+            if image_w <= 0 or image_h <= 0:
+                continue
+
+            label_lines: list[str] = []
+            for ann in annotations_by_image.get(image_id, []):
+                category_name = categories.get(int(ann.get("category_id", -1)), "")
+                if category_name != CLASS_NAME:
+                    continue
+                bbox = ann.get("bbox") or []
+                if len(bbox) != 4:
+                    continue
+                x, y, w, h = [float(v) for v in bbox]
+                if w <= 0 or h <= 0:
+                    continue
+                yolo_box = _bbox_to_yolo((x, y, x + w, y + h), image_w=image_w, image_h=image_h)
+                cx, cy, yw, yh = yolo_box
+                label_lines.append(f"{CLASS_ID} {cx:.6f} {cy:.6f} {yw:.6f} {yh:.6f}")
+
+            out_name = f"{source_name}__{split_name}__{image_path.name}"
+            records.append(
+                {
+                    "name": out_name,
+                    "image_bytes": image_path.read_bytes(),
+                    "label_lines": label_lines,
+                }
+            )
+    return records
+
+
 def collect_external_yolo_records() -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     if not EXTERNAL_ROOT.exists():
@@ -175,7 +232,9 @@ def main() -> None:
     ensure_dirs()
     positives = collect_positive_records()
     negatives = collect_negative_records()
-    external = collect_external_yolo_records()
+    external_yolo = collect_external_yolo_records()
+    external_coco = collect_external_coco_records()
+    external = external_yolo + external_coco
     all_records = positives + negatives + external
     if not all_records:
         raise RuntimeError("No dataset records found in data/raw or data/external")
@@ -195,6 +254,7 @@ def main() -> None:
     print(
         f"prepared dataset: total={len(all_records)} "
         f"positive={len(positives)} negative={len(negatives)} external={len(external)} "
+        f"(yolo={len(external_yolo)} coco={len(external_coco)}) "
         f"train={train_count} "
         f"val={len(all_records) - train_count}"
     )

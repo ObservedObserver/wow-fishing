@@ -88,7 +88,11 @@ def _detect_near_anchor(
         return vision.detect(frame)
 
     roi = frame[y0:y1, x0:x1]
-    det = vision.detect(roi)
+    det = vision.detect(
+        roi,
+        preferred_x=anchor_x - x0,
+        preferred_y=anchor_y - y0,
+    )
     if det is None:
         return None
     det_x = det.x + x0
@@ -149,7 +153,7 @@ def _locate_stable_near_anchor(
     detections: list[Detection] = []
     samples = max(1, confirm_frames)
     for i in range(samples):
-        shot = capture.grab_with_offset()
+        shot = capture.grab_with_offset(preferred_x=anchor_x, preferred_y=anchor_y)
         local_anchor_x = None if anchor_x is None else (anchor_x - shot.left)
         local_anchor_y = None if anchor_y is None else (anchor_y - shot.top)
         det = _detect_near_anchor(

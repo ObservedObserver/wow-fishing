@@ -8,8 +8,15 @@ class _FakeVision:
     def __init__(self, det: Detection | None) -> None:
         self._det = det
 
-    def detect(self, frame: np.ndarray) -> Detection | None:
+    def detect(
+        self,
+        frame: np.ndarray,
+        preferred_x: int | None = None,
+        preferred_y: int | None = None,
+    ) -> Detection | None:
         del frame
+        del preferred_x
+        del preferred_y
         return self._det
 
 

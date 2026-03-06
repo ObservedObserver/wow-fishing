@@ -5,6 +5,7 @@ import random
 import time
 
 from app.config import ControlConfig
+from app.platform_win import ensure_dpi_aware
 
 _MOUSEEVENTF_MOVE = 0x0001
 _MOUSEEVENTF_RIGHTDOWN = 0x0008
@@ -20,14 +21,8 @@ class _POINT(ctypes.Structure):
 class MouseController:
     def __init__(self, cfg: ControlConfig) -> None:
         self.cfg = cfg
+        ensure_dpi_aware()
         self.user32 = ctypes.windll.user32
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)
-        except Exception:
-            try:
-                self.user32.SetProcessDPIAware()
-            except Exception:
-                pass
 
     def get_position(self) -> tuple[int, int]:
         point = _POINT()
@@ -75,4 +70,3 @@ class MouseController:
 
     def _mouse_event(self, flags: int, dx: int, dy: int) -> None:
         self.user32.mouse_event(flags, dx, dy, 0, 0)
-

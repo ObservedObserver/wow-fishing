@@ -114,23 +114,35 @@ class BobberDetector:
             self._input_name = None
             print(f"[vision] warning: model unavailable, continue without ONNX ({exc})")
 
-    def detect(self, frame_bgr: np.ndarray) -> Detection | None:
+    def detect(
+        self,
+        frame_bgr: np.ndarray,
+        preferred_x: int | None = None,
+        preferred_y: int | None = None,
+    ) -> Detection | None:
         if self.cfg.roi:
             x, y, w, h = self.cfg.roi
             roi = frame_bgr[y : y + h, x : x + w]
-            det = self._detect_core(roi)
+            roi_pref_x = None if preferred_x is None else preferred_x - x
+            roi_pref_y = None if preferred_y is None else preferred_y - y
+            det = self._detect_core(roi, preferred_x=roi_pref_x, preferred_y=roi_pref_y)
             if det is None:
                 return None
             return Detection(x=det.x + x, y=det.y + y, conf=det.conf, source=det.source)
-        return self._detect_core(frame_bgr)
+        return self._detect_core(frame_bgr, preferred_x=preferred_x, preferred_y=preferred_y)
 
-    def _detect_core(self, frame_bgr: np.ndarray) -> Detection | None:
+    def _detect_core(
+        self,
+        frame_bgr: np.ndarray,
+        preferred_x: int | None = None,
+        preferred_y: int | None = None,
+    ) -> Detection | None:
         work = frame_bgr
         crop_h = int(frame_bgr.shape[0] * (1.0 - self.cfg.ignore_bottom_ratio))
         if 0 < crop_h < frame_bgr.shape[0]:
             work = frame_bgr[:crop_h, :]
         if not self._fallback_only and self._session is not None and cv2 is not None:
-            det = self._detect_onnx(work)
+            det = self._detect_onnx(work, preferred_x=preferred_x, preferred_y=preferred_y)
             if det is not None:
                 return det
         if cv2 is not None and self._templates_gray:
@@ -194,7 +206,12 @@ class BobberDetector:
         self.last_template_score = best_score
         return best
 
-    def _detect_onnx(self, frame_bgr: np.ndarray) -> Detection | None:
+    def _detect_onnx(
+        self,
+        frame_bgr: np.ndarray,
+        preferred_x: int | None = None,
+        preferred_y: int | None = None,
+    ) -> Detection | None:
         assert self._session is not None and self._input_name is not None and cv2 is not None
         image = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         src_h, src_w = image.shape[:2]
@@ -208,7 +225,7 @@ class BobberDetector:
             return None
 
         preds = output[0].T
-        best: Detection | None = None
+        candidates: list[dict[str, float | int]] = []
 
         for row in preds:
             cx, cy, w, h = row[0:4]
@@ -222,12 +239,110 @@ class BobberDetector:
 
             x_scale = src_w / size
             y_scale = src_h / size
-            x = int(cx * x_scale)
-            y = int(cy * y_scale)
-            cand = Detection(x=x, y=y, conf=conf, source="onnx")
-            if best is None or cand.conf > best.conf:
-                best = cand
-        return best
+            x = float(cx * x_scale)
+            y = float(cy * y_scale)
+            bw = float(w * x_scale)
+            bh = float(h * y_scale)
+            x1 = max(0.0, x - (bw / 2.0))
+            y1 = max(0.0, y - (bh / 2.0))
+            x2 = min(float(src_w - 1), x + (bw / 2.0))
+            y2 = min(float(src_h - 1), y + (bh / 2.0))
+            candidates.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                    "conf": conf,
+                }
+            )
+
+        if not candidates:
+            return None
+
+        kept = self._nms(candidates, iou_threshold=0.45)
+        best = max(
+            kept,
+            key=lambda cand: self._candidate_score(
+                int(cand["x"]),
+                int(cand["y"]),
+                float(cand["conf"]),
+                preferred_x=preferred_x,
+                preferred_y=preferred_y,
+                frame_w=src_w,
+                frame_h=src_h,
+            ),
+        )
+        return Detection(
+            x=int(best["x"]),
+            y=int(best["y"]),
+            conf=float(best["conf"]),
+            source="onnx",
+        )
+
+    def _candidate_score(
+        self,
+        x: int,
+        y: int,
+        conf: float,
+        preferred_x: int | None,
+        preferred_y: int | None,
+        frame_w: int,
+        frame_h: int,
+    ) -> float:
+        if preferred_x is None or preferred_y is None:
+            return conf
+
+        diag = max(1.0, float((frame_w * frame_w + frame_h * frame_h) ** 0.5))
+        dx = float(x - preferred_x)
+        dy = float(y - preferred_y)
+        dist_ratio = ((dx * dx + dy * dy) ** 0.5) / diag
+        return conf - (0.35 * dist_ratio)
+
+    def _nms(
+        self,
+        candidates: list[dict[str, float | int]],
+        iou_threshold: float,
+    ) -> list[dict[str, float | int]]:
+        ordered = sorted(candidates, key=lambda cand: float(cand["conf"]), reverse=True)
+        kept: list[dict[str, float | int]] = []
+
+        while ordered:
+            current = ordered.pop(0)
+            kept.append(current)
+            ordered = [
+                cand
+                for cand in ordered
+                if self._iou(current, cand) < iou_threshold
+            ]
+        return kept
+
+    def _iou(
+        self,
+        a: dict[str, float | int],
+        b: dict[str, float | int],
+    ) -> float:
+        ax1, ay1, ax2, ay2 = float(a["x1"]), float(a["y1"]), float(a["x2"]), float(a["y2"])
+        bx1, by1, bx2, by2 = float(b["x1"]), float(b["y1"]), float(b["x2"]), float(b["y2"])
+
+        inter_x1 = max(ax1, bx1)
+        inter_y1 = max(ay1, by1)
+        inter_x2 = min(ax2, bx2)
+        inter_y2 = min(ay2, by2)
+        inter_w = max(0.0, inter_x2 - inter_x1)
+        inter_h = max(0.0, inter_y2 - inter_y1)
+        inter_area = inter_w * inter_h
+        if inter_area <= 0.0:
+            return 0.0
+
+        area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+        area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+        union = area_a + area_b - inter_area
+        if union <= 0.0:
+            return 0.0
+        return inter_area / union
 
     def _detect_hsv_fallback(self, frame_bgr: np.ndarray) -> Detection | None:
         if cv2 is None:
