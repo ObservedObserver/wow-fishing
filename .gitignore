@@ -180,5 +180,6 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Training data and run artifacts stay local; commit deployable models from models/.
 data
 runs
