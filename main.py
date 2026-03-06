@@ -76,7 +76,7 @@ def _detect_near_anchor(
     radius: int,
 ) -> Detection | None:
     if anchor_x is None or anchor_y is None or radius <= 0:
-        return vision.detect(frame)
+        return vision.detect_template_fallback_only(frame)
 
     h, w = frame.shape[:2]
     x0 = max(0, anchor_x - radius)
@@ -85,10 +85,10 @@ def _detect_near_anchor(
     y1 = min(h, anchor_y + radius)
     if x1 - x0 < 16 or y1 - y0 < 16:
         # If anchor falls outside the captured monitor, keep old full-frame fallback behavior.
-        return vision.detect(frame)
+        return vision.detect_template_fallback_only(frame)
 
     roi = frame[y0:y1, x0:x1]
-    det = vision.detect(
+    det = vision.detect_template_fallback_only(
         roi,
         preferred_x=anchor_x - x0,
         preferred_y=anchor_y - y0,
@@ -102,6 +102,30 @@ def _detect_near_anchor(
     if dx * dx + dy * dy > radius * radius:
         return None
     return Detection(x=det_x, y=det_y, conf=det.conf, source=det.source)
+
+
+def _detect_onnx_in_window(
+    vision: BobberDetector,
+    frame: np.ndarray,
+    anchor_x: int | None,
+    anchor_y: int | None,
+    radius: int,
+) -> Detection | None:
+    if anchor_x is None or anchor_y is None or radius <= 0:
+        return vision.detect_onnx_only(frame)
+
+    det = vision.detect_onnx_only(
+        frame,
+        preferred_x=anchor_x,
+        preferred_y=anchor_y,
+    )
+    if det is None:
+        return None
+    dx = det.x - anchor_x
+    dy = det.y - anchor_y
+    if dx * dx + dy * dy > radius * radius:
+        return None
+    return det
 
 
 def _select_stable_detection(
@@ -153,25 +177,48 @@ def _locate_stable_near_anchor(
     detections: list[Detection] = []
     samples = max(1, confirm_frames)
     for i in range(samples):
-        shot = capture.grab_with_offset(preferred_x=anchor_x, preferred_y=anchor_y)
-        local_anchor_x = None if anchor_x is None else (anchor_x - shot.left)
-        local_anchor_y = None if anchor_y is None else (anchor_y - shot.top)
-        det = _detect_near_anchor(
-            vision=vision,
-            frame=shot.frame_bgr,
-            anchor_x=local_anchor_x,
-            anchor_y=local_anchor_y,
-            radius=radius,
-        )
-        if det is not None:
-            detections.append(
-                Detection(
-                    x=det.x + shot.left,
-                    y=det.y + shot.top,
-                    conf=det.conf,
-                    source=det.source,
-                )
+        det = None
+
+        if vision.has_onnx():
+            model_shot = capture.grab_window_with_offset(preferred_x=anchor_x, preferred_y=anchor_y)
+            model_anchor_x = None if anchor_x is None else (anchor_x - model_shot.left)
+            model_anchor_y = None if anchor_y is None else (anchor_y - model_shot.top)
+            model_det = _detect_onnx_in_window(
+                vision=vision,
+                frame=model_shot.frame_bgr,
+                anchor_x=model_anchor_x,
+                anchor_y=model_anchor_y,
+                radius=radius,
             )
+            if model_det is not None:
+                det = Detection(
+                    x=model_det.x + model_shot.left,
+                    y=model_det.y + model_shot.top,
+                    conf=model_det.conf,
+                    source=model_det.source,
+                )
+
+        if det is None:
+            shot = capture.grab_with_offset(preferred_x=anchor_x, preferred_y=anchor_y)
+            local_anchor_x = None if anchor_x is None else (anchor_x - shot.left)
+            local_anchor_y = None if anchor_y is None else (anchor_y - shot.top)
+            local_det = _detect_near_anchor(
+                vision=vision,
+                frame=shot.frame_bgr,
+                anchor_x=local_anchor_x,
+                anchor_y=local_anchor_y,
+                radius=radius,
+            )
+            if local_det is not None:
+                det = Detection(
+                    x=local_det.x + shot.left,
+                    y=local_det.y + shot.top,
+                    conf=local_det.conf,
+                    source=local_det.source,
+                )
+
+        if det is not None:
+            detections.append(det)
         if i + 1 < samples:
             time.sleep(_LOCATE_CONFIRM_INTERVAL_MS / 1000.0)
     return _select_stable_detection(detections, anchor_x, anchor_y, radius), len(detections)

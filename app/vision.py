@@ -114,42 +114,98 @@ class BobberDetector:
             self._input_name = None
             print(f"[vision] warning: model unavailable, continue without ONNX ({exc})")
 
+    def has_onnx(self) -> bool:
+        return (not self._fallback_only) and self._session is not None and cv2 is not None
+
     def detect(
         self,
         frame_bgr: np.ndarray,
         preferred_x: int | None = None,
         preferred_y: int | None = None,
     ) -> Detection | None:
+        return self._detect_with_mode(
+            frame_bgr,
+            preferred_x=preferred_x,
+            preferred_y=preferred_y,
+            mode="combined",
+        )
+
+    def detect_onnx_only(
+        self,
+        frame_bgr: np.ndarray,
+        preferred_x: int | None = None,
+        preferred_y: int | None = None,
+    ) -> Detection | None:
+        return self._detect_with_mode(
+            frame_bgr,
+            preferred_x=preferred_x,
+            preferred_y=preferred_y,
+            mode="onnx",
+        )
+
+    def detect_template_fallback_only(
+        self,
+        frame_bgr: np.ndarray,
+        preferred_x: int | None = None,
+        preferred_y: int | None = None,
+    ) -> Detection | None:
+        return self._detect_with_mode(
+            frame_bgr,
+            preferred_x=preferred_x,
+            preferred_y=preferred_y,
+            mode="template",
+        )
+
+    def _detect_with_mode(
+        self,
+        frame_bgr: np.ndarray,
+        preferred_x: int | None,
+        preferred_y: int | None,
+        mode: str,
+    ) -> Detection | None:
         if self.cfg.roi:
             x, y, w, h = self.cfg.roi
             roi = frame_bgr[y : y + h, x : x + w]
             roi_pref_x = None if preferred_x is None else preferred_x - x
             roi_pref_y = None if preferred_y is None else preferred_y - y
-            det = self._detect_core(roi, preferred_x=roi_pref_x, preferred_y=roi_pref_y)
+            det = self._detect_core(
+                roi,
+                preferred_x=roi_pref_x,
+                preferred_y=roi_pref_y,
+                mode=mode,
+            )
             if det is None:
                 return None
             return Detection(x=det.x + x, y=det.y + y, conf=det.conf, source=det.source)
-        return self._detect_core(frame_bgr, preferred_x=preferred_x, preferred_y=preferred_y)
+        return self._detect_core(
+            frame_bgr,
+            preferred_x=preferred_x,
+            preferred_y=preferred_y,
+            mode=mode,
+        )
 
     def _detect_core(
         self,
         frame_bgr: np.ndarray,
         preferred_x: int | None = None,
         preferred_y: int | None = None,
+        mode: str = "combined",
     ) -> Detection | None:
         work = frame_bgr
         crop_h = int(frame_bgr.shape[0] * (1.0 - self.cfg.ignore_bottom_ratio))
         if 0 < crop_h < frame_bgr.shape[0]:
             work = frame_bgr[:crop_h, :]
-        if not self._fallback_only and self._session is not None and cv2 is not None:
+        if mode in {"combined", "onnx"} and self.has_onnx():
             det = self._detect_onnx(work, preferred_x=preferred_x, preferred_y=preferred_y)
             if det is not None:
                 return det
-        if cv2 is not None and self._templates_gray:
+        if mode in {"combined", "template"} and cv2 is not None and self._templates_gray:
             det = self._detect_template(work)
             if det is not None:
                 return det
-        return self._detect_hsv_fallback(work)
+        if mode in {"combined", "template"}:
+            return self._detect_hsv_fallback(work)
+        return None
 
     def _detect_template(self, frame_bgr: np.ndarray) -> Detection | None:
         assert cv2 is not None
