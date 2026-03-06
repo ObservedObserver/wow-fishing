@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from datetime import datetime
 from pathlib import Path
 
@@ -21,18 +22,29 @@ def _device() -> str:
     return "mps" if torch.backends.mps.is_available() else "cpu"
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--imgsz", type=int, default=640)
+    parser.add_argument("--epochs", type=int, default=120)
+    parser.add_argument("--batch", type=int, default=4)
+    parser.add_argument("--base", type=str, default=str(ROOT / "yolov8n.pt"))
+    parser.add_argument("--prefix", type=str, default="bobber_train")
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = _parse_args()
     if not DATASET_YAML.exists():
         raise RuntimeError("dataset.yaml not found. Run scripts/prepare_yolo_dataset.py first.")
 
-    run_name = _run_name("bobber_train")
+    run_name = _run_name(args.prefix)
     run_dir = RUNS_DIR / run_name
-    model = YOLO(str(ROOT / "yolov8n.pt"))
+    model = YOLO(args.base)
     model.train(
         data=str(DATASET_YAML),
-        epochs=120,
-        imgsz=640,
-        batch=4,
+        epochs=args.epochs,
+        imgsz=args.imgsz,
+        batch=args.batch,
         project=str(RUNS_DIR),
         name=run_name,
         exist_ok=False,
@@ -59,7 +71,7 @@ def main() -> None:
     last_latest.write_bytes(last_versioned.read_bytes())
 
     trained = YOLO(str(best_pt))
-    onnx_path = trained.export(format="onnx", imgsz=640, opset=12, simplify=False)
+    onnx_path = trained.export(format="onnx", imgsz=args.imgsz, opset=12, simplify=False)
 
     versioned = MODELS_DIR / f"{run_name}.onnx"
     latest = MODELS_DIR / "bobber.onnx"
@@ -73,6 +85,7 @@ def main() -> None:
     print(f"last checkpoint: {last_pt}")
     print(f"best model copy: {best_versioned}")
     print(f"last model copy: {last_versioned}")
+    print(f"imgsz: {args.imgsz}")
     print(f"exported model: {versioned}")
     print(f"latest model: {latest}")
 

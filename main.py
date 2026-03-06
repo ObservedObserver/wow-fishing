@@ -185,6 +185,8 @@ def _locate_stable_near_anchor(
                     conf=model_det.conf,
                     source=model_det.source,
                 )
+            else:
+                print("[vision] ONNX locate miss, falling back to template/ROI search")
 
         if det is None:
             shot = capture.grab_with_offset(preferred_x=anchor_x, preferred_y=anchor_y)

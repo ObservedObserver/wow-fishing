@@ -10,7 +10,7 @@ audio:
   input_device: null
 
 timing:
-  key_detect_delay_ms: 1000
+  key_detect_delay_ms: 1400
   key_retry_interval_ms: 500
   key_retry_max_attempts: 3
   recast_on_miss: true
@@ -30,6 +30,7 @@ vision:
   input_size: 640
   conf_threshold: 0.30
   onnx_class_ids: [0]
+  onnx_providers: []
   template_dir: "C:\\Users\\27000\\Pictures\\bobber_templates"
   template_paths: []
   template_threshold: 0.52
@@ -45,7 +46,7 @@ vision:
   ignore_bottom_ratio: 0.18
   allow_fallback_for_action: false
   key_search_radius: 520
-  onnx_force_top1: true
+  onnx_force_top1: false
   onnx_use_preferred_anchor: false
   onnx_crop_left_ratio: 0.04
   onnx_crop_right_ratio: 0.04

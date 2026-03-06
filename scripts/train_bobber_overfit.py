@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from datetime import datetime
 from pathlib import Path
 
@@ -30,21 +31,32 @@ def _latest_base_checkpoint() -> Path | None:
     return candidates[0] if candidates else None
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--imgsz", type=int, default=640)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--batch", type=int, default=4)
+    parser.add_argument("--base", type=str, default="")
+    parser.add_argument("--prefix", type=str, default="bobber_overfit")
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = _parse_args()
     if not DATASET_YAML.exists():
         raise RuntimeError("dataset.yaml not found. Run scripts/prepare_yolo_dataset.py first.")
 
-    run_name = _run_name("bobber_overfit")
+    run_name = _run_name(args.prefix)
     run_dir = RUNS_DIR / run_name
     base_best = _latest_base_checkpoint()
-    start_model = str(base_best if base_best is not None else (ROOT / "yolov8n.pt"))
+    start_model = args.base or str(base_best if base_best is not None else (ROOT / "yolov8n.pt"))
     model = YOLO(start_model)
 
     model.train(
         data=str(DATASET_YAML),
-        epochs=100,
-        imgsz=640,
-        batch=4,
+        epochs=args.epochs,
+        imgsz=args.imgsz,
+        batch=args.batch,
         project=str(RUNS_DIR),
         name=run_name,
         exist_ok=False,
@@ -85,7 +97,7 @@ def main() -> None:
     last_latest.write_bytes(last_versioned.read_bytes())
 
     trained = YOLO(str(best_pt))
-    onnx_path = trained.export(format="onnx", imgsz=640, opset=12, simplify=False)
+    onnx_path = trained.export(format="onnx", imgsz=args.imgsz, opset=12, simplify=False)
 
     versioned = MODELS_DIR / f"{run_name}.onnx"
     latest = MODELS_DIR / "bobber.onnx"
@@ -100,6 +112,7 @@ def main() -> None:
     print(f"last checkpoint: {last_pt}")
     print(f"best model copy: {best_versioned}")
     print(f"last model copy: {last_versioned}")
+    print(f"imgsz: {args.imgsz}")
     print(f"exported model: {versioned}")
     print(f"latest model: {latest}")
 

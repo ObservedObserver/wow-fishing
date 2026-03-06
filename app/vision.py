@@ -46,6 +46,23 @@ class ModelManager:
         return model_path
 
 
+def _resolve_onnx_providers(cfg: VisionConfig) -> list[str]:
+    if ort is None:
+        return ["CPUExecutionProvider"]
+
+    available = set(ort.get_available_providers())
+    if cfg.onnx_providers:
+        providers = [provider for provider in cfg.onnx_providers if provider in available]
+        if providers:
+            return providers
+
+    providers: list[str] = []
+    for provider in ("CUDAExecutionProvider", "CPUExecutionProvider"):
+        if provider in available:
+            providers.append(provider)
+    return providers or ["CPUExecutionProvider"]
+
+
 def _crop_onnx_frame(
     frame_bgr: np.ndarray,
     left_ratio: float,
@@ -72,6 +89,38 @@ def _crop_onnx_frame(
     if x1 - x0 < 16 or y1 - y0 < 16:
         return frame_bgr, 0, 0
     return frame_bgr[y0:y1, x0:x1], x0, y0
+
+
+def _letterbox_image(
+    image_rgb: np.ndarray,
+    size: int,
+    pad_value: int = 114,
+) -> tuple[np.ndarray, float, int, int]:
+    src_h, src_w = image_rgb.shape[:2]
+    if src_h <= 0 or src_w <= 0:
+        raise ValueError("image must have positive dimensions")
+
+    scale = min(size / src_w, size / src_h)
+    new_w = max(1, int(round(src_w * scale)))
+    new_h = max(1, int(round(src_h * scale)))
+    resized = cv2.resize(image_rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+    pad_w = size - new_w
+    pad_h = size - new_h
+    pad_left = pad_w // 2
+    pad_top = pad_h // 2
+    pad_right = pad_w - pad_left
+    pad_bottom = pad_h - pad_top
+    padded = cv2.copyMakeBorder(
+        resized,
+        pad_top,
+        pad_bottom,
+        pad_left,
+        pad_right,
+        cv2.BORDER_CONSTANT,
+        value=(pad_value, pad_value, pad_value),
+    )
+    return padded, scale, pad_left, pad_top
 
 
 class BobberDetector:
@@ -137,8 +186,10 @@ class BobberDetector:
         manager = ModelManager(self.cfg)
         try:
             model_path = manager.ensure_model()
-            self._session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+            providers = _resolve_onnx_providers(self.cfg)
+            self._session = ort.InferenceSession(str(model_path), providers=providers)
             self._input_name = self._session.get_inputs()[0].name
+            print(f"[vision] ONNX providers: {providers}")
         except Exception as exc:
             # Keep template/hsv path available even if model is unavailable.
             self._session = None
@@ -316,7 +367,7 @@ class BobberDetector:
         image = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB)
         src_h, src_w = image.shape[:2]
         size = self.cfg.input_size
-        resized = cv2.resize(image, (size, size), interpolation=cv2.INTER_LINEAR)
+        resized, scale, pad_x, pad_y = _letterbox_image(image, size)
         tensor = resized.astype(np.float32) / 255.0
         tensor = np.transpose(tensor, (2, 0, 1))[None, :, :, :]
 
@@ -325,8 +376,6 @@ class BobberDetector:
             return None
 
         preds = output[0].T
-        x_scale = src_w / size
-        y_scale = src_h / size
         all_bboxes: list[tuple[int, int, int, int, float]] = []
         candidates: list[dict[str, float | int]] = []
         all_class_candidates: list[dict[str, float | int]] = []
@@ -336,10 +385,10 @@ class BobberDetector:
             cls_scores = row[4:]
             cls_id = int(np.argmax(cls_scores))
             conf = float(cls_scores[cls_id])
-            x = float(cx * x_scale)
-            y = float(cy * y_scale)
-            bw = float(w * x_scale)
-            bh = float(h * y_scale)
+            x = float((cx - pad_x) / scale)
+            y = float((cy - pad_y) / scale)
+            bw = float(w / scale)
+            bh = float(h / scale)
             x1 = max(0.0, x - (bw / 2.0))
             y1 = max(0.0, y - (bh / 2.0))
             x2 = min(float(src_w - 1), x + (bw / 2.0))

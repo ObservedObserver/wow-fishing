@@ -22,7 +22,7 @@ class AudioConfig:
 
 @dataclass(slots=True)
 class TimingConfig:
-    key_detect_delay_ms: int = 1_000
+    key_detect_delay_ms: int = 1_400
     key_retry_interval_ms: int = 500
     key_retry_max_attempts: int = 3
     recast_on_miss: bool = True
@@ -46,6 +46,7 @@ class VisionConfig:
     input_size: int = 640
     conf_threshold: float = 0.55
     onnx_class_ids: tuple[int, ...] = (0,)
+    onnx_providers: tuple[str, ...] = ()
     template_dir: str | None = None
     template_paths: tuple[str, ...] = ()
     template_threshold: float = 0.72
@@ -61,7 +62,7 @@ class VisionConfig:
     ignore_bottom_ratio: float = 0.18
     allow_fallback_for_action: bool = False
     key_search_radius: int = 520
-    onnx_force_top1: bool = True
+    onnx_force_top1: bool = False
     onnx_use_preferred_anchor: bool = False
     onnx_crop_left_ratio: float = 0.04
     onnx_crop_right_ratio: float = 0.04
