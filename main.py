@@ -378,6 +378,8 @@ def command_run(cfg: AppConfig) -> None:
                     pending_locate_at_ms = None
                     pending_locate_attempt = 0
                     bobber_tracked = True
+                    time.sleep(frame_interval_s)
+                    continue
                 else:
                     if pending_locate_attempt < max(1, cfg.timing.key_retry_max_attempts):
                         pending_locate_attempt += 1
