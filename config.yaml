@@ -45,6 +45,7 @@ vision:
   allow_fallback_for_action: false
   key_search_radius: 520
   roi: null
+  debug_save_model_input: true
 
 control:
   move_duration_ms: 35
