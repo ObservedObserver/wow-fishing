@@ -123,6 +123,16 @@ def _letterbox_image(
     return padded, scale, pad_left, pad_top
 
 
+def _resolve_fixed_square_input_size(shape: Any) -> int | None:
+    if not isinstance(shape, (list, tuple)) or len(shape) < 4:
+        return None
+    h = shape[2]
+    w = shape[3]
+    if isinstance(h, int) and isinstance(w, int) and h > 0 and h == w:
+        return h
+    return None
+
+
 class BobberDetector:
     """
     ONNX detector first; HSV fallback if runtime packages unavailable.
@@ -132,6 +142,7 @@ class BobberDetector:
         self.cfg = cfg
         self._session: Any | None = None
         self._input_name: str | None = None
+        self._model_input_size: int | None = None
         self._enabled_classes = set(int(c) for c in cfg.onnx_class_ids)
         self._fallback_only = False
         self._templates_gray: list[np.ndarray] = []
@@ -188,12 +199,24 @@ class BobberDetector:
             model_path = manager.ensure_model()
             providers = _resolve_onnx_providers(self.cfg)
             self._session = ort.InferenceSession(str(model_path), providers=providers)
-            self._input_name = self._session.get_inputs()[0].name
+            input_meta = self._session.get_inputs()[0]
+            self._input_name = input_meta.name
+            self._model_input_size = _resolve_fixed_square_input_size(input_meta.shape)
             print(f"[vision] ONNX providers: {providers}")
+            if (
+                self._model_input_size is not None
+                and self._model_input_size != int(self.cfg.input_size)
+            ):
+                print(
+                    "[vision] warning: config input_size="
+                    f"{self.cfg.input_size} does not match model input="
+                    f"{self._model_input_size}; using model input size"
+                )
         except Exception as exc:
             # Keep template/hsv path available even if model is unavailable.
             self._session = None
             self._input_name = None
+            self._model_input_size = None
             print(f"[vision] warning: model unavailable, continue without ONNX ({exc})")
 
     def has_onnx(self) -> bool:
@@ -366,7 +389,7 @@ class BobberDetector:
         )
         image = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB)
         src_h, src_w = image.shape[:2]
-        size = self.cfg.input_size
+        size = self._model_input_size or int(self.cfg.input_size)
         resized, scale, pad_x, pad_y = _letterbox_image(image, size)
         tensor = resized.astype(np.float32) / 255.0
         tensor = np.transpose(tensor, (2, 0, 1))[None, :, :, :]
