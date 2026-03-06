@@ -221,6 +221,7 @@ def _clear_lingering_bobber_before_cast(
     anchor_x: int | None,
     anchor_y: int | None,
     radius: int,
+    min_conf: float,
 ) -> tuple[bool, int | None, int | None]:
     if anchor_x is None or anchor_y is None or radius <= 0:
         return False, anchor_x, anchor_y
@@ -236,6 +237,12 @@ def _clear_lingering_bobber_before_cast(
         radius=radius,
     )
     if det is None:
+        return False, anchor_x, anchor_y
+    if det.conf < min_conf:
+        print(
+            f"[precast-cleanup] skipped weak match conf={det.conf:.3f} "
+            f"min_conf={min_conf:.3f}"
+        )
         return False, anchor_x, anchor_y
 
     abs_x = det.x + shot.left
@@ -324,14 +331,15 @@ def command_run(cfg: AppConfig) -> None:
                 )
 
             if auto_enabled and next_cast_at_ms is not None and now_ms >= next_cast_at_ms:
-                if needs_precast_cleanup:
+                if cfg.vision.enable_precast_cleanup and needs_precast_cleanup:
                     cleaned, cleaned_x, cleaned_y = _clear_lingering_bobber_before_cast(
                         vision=vision,
                         capture=capture,
                         mouse=mouse,
                         anchor_x=cast_anchor_x,
                         anchor_y=cast_anchor_y,
-                        radius=cfg.vision.key_search_radius,
+                        radius=cfg.vision.precast_cleanup_radius,
+                        min_conf=cfg.vision.precast_cleanup_min_conf,
                     )
                     needs_precast_cleanup = False
                     if cleaned:
@@ -425,7 +433,7 @@ def command_run(cfg: AppConfig) -> None:
                 mouse.right_click()
                 last_sound_click_ms = int(time.monotonic() * 1000)
                 bobber_tracked = False
-                needs_precast_cleanup = True
+                needs_precast_cleanup = cfg.vision.enable_precast_cleanup
                 if auto_enabled:
                     schedule_next_cast(
                         now_ms=last_sound_click_ms,

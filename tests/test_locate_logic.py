@@ -190,8 +190,33 @@ def test_precast_cleanup_clicks_lingering_bobber() -> None:
         anchor_x=120,
         anchor_y=130,
         radius=120,
+        min_conf=0.6,
     )
 
     assert cleaned is True
     assert (x, y) == (140, 160)
     assert mouse.clicked == [(140, 160)]
+
+
+def test_precast_cleanup_skips_weak_match() -> None:
+    vision = _FakeVision(
+        onnx_det=None,
+        template_det=Detection(x=140, y=150, conf=0.58, source="template"),
+        has_onnx=True,
+    )
+    capture = _FakeCapture(window_shape=(600, 800), monitor_shape=(1080, 1920))
+    mouse = _FakeMouse()
+
+    cleaned, x, y = _clear_lingering_bobber_before_cast(
+        vision=vision,  # type: ignore[arg-type]
+        capture=capture,  # type: ignore[arg-type]
+        mouse=mouse,  # type: ignore[arg-type]
+        anchor_x=120,
+        anchor_y=130,
+        radius=120,
+        min_conf=0.72,
+    )
+
+    assert cleaned is False
+    assert (x, y) == (120, 130)
+    assert mouse.clicked == []

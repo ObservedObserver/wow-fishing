@@ -62,6 +62,9 @@ class VisionConfig:
     ignore_bottom_ratio: float = 0.18
     allow_fallback_for_action: bool = False
     key_search_radius: int = 520
+    enable_precast_cleanup: bool = False
+    precast_cleanup_radius: int = 220
+    precast_cleanup_min_conf: float = 0.72
     onnx_force_top1: bool = False
     onnx_use_preferred_anchor: bool = False
     onnx_crop_left_ratio: float = 0.04

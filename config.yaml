@@ -46,6 +46,9 @@ vision:
   ignore_bottom_ratio: 0.18
   allow_fallback_for_action: false
   key_search_radius: 520
+  enable_precast_cleanup: false
+  precast_cleanup_radius: 220
+  precast_cleanup_min_conf: 0.72
   onnx_force_top1: false
   onnx_use_preferred_anchor: false
   onnx_crop_left_ratio: 0.04
