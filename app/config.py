@@ -34,6 +34,7 @@ class TimingConfig:
     precast_cleanup_delay_ms: int = 900
     bite_window_start_ms: int = 4_000
     bite_window_end_ms: int = 26_000
+    max_cast_lifetime_ms: int = 30_000
     click_cooldown_ms: int = 1_200
 
 

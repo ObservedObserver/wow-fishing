@@ -22,6 +22,7 @@ timing:
   precast_cleanup_delay_ms: 900
   bite_window_start_ms: 4000
   bite_window_end_ms: 26000
+  max_cast_lifetime_ms: 30000
   click_cooldown_ms: 1200
 
 vision:

@@ -3,6 +3,7 @@ import numpy as np
 from app.vision import Detection
 from app.capture import CaptureFrame
 from main import (
+    _cast_has_timed_out,
     _clear_lingering_bobber_before_cast,
     _detect_near_anchor,
     _locate_stable_near_anchor,
@@ -220,3 +221,21 @@ def test_precast_cleanup_skips_weak_match() -> None:
     assert cleaned is False
     assert (x, y) == (120, 130)
     assert mouse.clicked == []
+
+
+def test_cast_timeout_uses_absolute_cast_lifetime() -> None:
+    assert not _cast_has_timed_out(
+        now_ms=29_999,
+        cast_started_at_ms=0,
+        max_cast_lifetime_ms=30_000,
+    )
+    assert _cast_has_timed_out(
+        now_ms=30_000,
+        cast_started_at_ms=0,
+        max_cast_lifetime_ms=30_000,
+    )
+    assert not _cast_has_timed_out(
+        now_ms=30_000,
+        cast_started_at_ms=None,
+        max_cast_lifetime_ms=30_000,
+    )

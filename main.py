@@ -57,6 +57,16 @@ class EscTrigger:
         return edge
 
 
+def _cast_has_timed_out(
+    now_ms: int,
+    cast_started_at_ms: int | None,
+    max_cast_lifetime_ms: int,
+) -> bool:
+    if cast_started_at_ms is None:
+        return False
+    return (now_ms - cast_started_at_ms) >= max(0, max_cast_lifetime_ms)
+
+
 def _synthetic_audio_frames(count: int, splash_idx: int) -> list[np.ndarray]:
     frames: list[np.ndarray] = []
     for i in range(count):
@@ -293,6 +303,7 @@ def command_run(cfg: AppConfig) -> None:
     next_cast_at_ms: int | None = None
     cast_anchor_x: int | None = None
     cast_anchor_y: int | None = None
+    cast_started_at_ms: int | None = None
     bobber_tracked = False
     auto_enabled = False
     needs_precast_cleanup = False
@@ -313,6 +324,7 @@ def command_run(cfg: AppConfig) -> None:
                 pending_locate_attempt = 0
                 bobber_tracked = False
                 needs_precast_cleanup = False
+                cast_started_at_ms = None
                 print("[loop] paused by ESC")
 
             if key_trigger.poll_pressed_edge():
@@ -322,6 +334,7 @@ def command_run(cfg: AppConfig) -> None:
                 pending_locate_at_ms = now_ms + cfg.timing.key_detect_delay_ms
                 pending_locate_attempt = 1
                 cast_anchor_x, cast_anchor_y = mouse.get_position()
+                cast_started_at_ms = now_ms
                 bobber_tracked = False
                 needs_precast_cleanup = False
                 next_cast_at_ms = None
@@ -352,6 +365,7 @@ def command_run(cfg: AppConfig) -> None:
                         continue
                 mouse.press_key_1()
                 cast_anchor_x, cast_anchor_y = mouse.get_position()
+                cast_started_at_ms = now_ms
                 pending_locate_at_ms = now_ms + cfg.timing.key_detect_delay_ms
                 pending_locate_attempt = 1
                 next_cast_at_ms = None
@@ -407,6 +421,7 @@ def command_run(cfg: AppConfig) -> None:
                         pending_locate_attempt = 0
                         bobber_tracked = False
                         needs_precast_cleanup = False
+                        cast_started_at_ms = None
                         if cfg.timing.recast_on_miss:
                             if auto_enabled:
                                 schedule_next_cast(
@@ -417,6 +432,26 @@ def command_run(cfg: AppConfig) -> None:
 
             audio_frame = audio_source.read_frame()
             audio_event = detector.update(audio_frame, now_ms=now_ms)
+            if bobber_tracked and _cast_has_timed_out(
+                now_ms=now_ms,
+                cast_started_at_ms=cast_started_at_ms,
+                max_cast_lifetime_ms=cfg.timing.max_cast_lifetime_ms,
+            ):
+                print(
+                    "[cast-timeout] no bite detected within "
+                    f"{cfg.timing.max_cast_lifetime_ms}ms, recasting"
+                )
+                bobber_tracked = False
+                needs_precast_cleanup = False
+                cast_started_at_ms = None
+                if auto_enabled:
+                    schedule_next_cast(
+                        now_ms=now_ms,
+                        reason="cast_timeout",
+                        extra_ms=cfg.timing.recast_miss_delay_ms,
+                    )
+                time.sleep(frame_interval_s)
+                continue
             if (
                 bobber_tracked
                 and audio_event is not None
@@ -434,6 +469,7 @@ def command_run(cfg: AppConfig) -> None:
                 last_sound_click_ms = int(time.monotonic() * 1000)
                 bobber_tracked = False
                 needs_precast_cleanup = cfg.vision.enable_precast_cleanup
+                cast_started_at_ms = None
                 if auto_enabled:
                     schedule_next_cast(
                         now_ms=last_sound_click_ms,
