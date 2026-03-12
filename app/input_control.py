@@ -16,6 +16,16 @@ _VK_SPACE = 0x20
 _MOVE_VERIFY_TOLERANCE_PX = 3
 _RIGHT_CLICK_RESET_DELAY_S = 0.01
 _RIGHT_CLICK_HOLD_S = 0.03
+_FUNCTION_KEY_BASE = 0x70
+_FUNCTION_KEY_MAX = 24
+_SPECIAL_KEYS: dict[str, int] = {
+    "ENTER": 0x0D,
+    "ESC": 0x1B,
+    "ESCAPE": 0x1B,
+    "F12": 0x7B,
+    "SPACE": 0x20,
+    "TAB": 0x09,
+}
 
 
 class _POINT(ctypes.Structure):
@@ -54,14 +64,13 @@ class MouseController:
         self._mouse_event(_MOUSEEVENTF_RIGHTUP, 0, 0)
 
     def press_key_1(self) -> None:
-        self.user32.keybd_event(_VK_1, 0, 0, 0)
-        time.sleep(0.03)
-        self.user32.keybd_event(_VK_1, 0, _KEYEVENTF_KEYUP, 0)
+        self._press_vk(_VK_1)
 
     def press_space(self) -> None:
-        self.user32.keybd_event(_VK_SPACE, 0, 0, 0)
-        time.sleep(0.03)
-        self.user32.keybd_event(_VK_SPACE, 0, _KEYEVENTF_KEYUP, 0)
+        self._press_vk(_VK_SPACE)
+
+    def press_interaction_key(self) -> None:
+        self._press_vk(_virtual_key_from_name(self.cfg.interaction_key))
 
     def _move_smooth(self, target_x: int, target_y: int) -> tuple[int, int]:
         start_x, start_y = self.get_position()
@@ -91,3 +100,28 @@ class MouseController:
 
     def _mouse_event(self, flags: int, dx: int, dy: int) -> None:
         self.user32.mouse_event(flags, dx, dy, 0, 0)
+
+    def _press_vk(self, vk_code: int) -> None:
+        self.user32.keybd_event(vk_code, 0, 0, 0)
+        time.sleep(0.03)
+        self.user32.keybd_event(vk_code, 0, _KEYEVENTF_KEYUP, 0)
+
+
+def _virtual_key_from_name(key_name: str) -> int:
+    normalized = str(key_name).strip().upper()
+    if not normalized:
+        raise ValueError("interaction_key cannot be empty")
+
+    special = _SPECIAL_KEYS.get(normalized)
+    if special is not None:
+        return special
+
+    if len(normalized) == 1 and normalized.isalnum():
+        return ord(normalized)
+
+    if normalized.startswith("F") and normalized[1:].isdigit():
+        fn_index = int(normalized[1:])
+        if 1 <= fn_index <= _FUNCTION_KEY_MAX:
+            return _FUNCTION_KEY_BASE + fn_index - 1
+
+    raise ValueError(f"unsupported interaction_key: {key_name!r}")

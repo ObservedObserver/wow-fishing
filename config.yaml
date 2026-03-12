@@ -62,6 +62,8 @@ vision:
   debug_save_model_input: false
 
 control:
+  bite_action_mode: mouse
+  interaction_key: F12
   move_duration_ms: 35
   jitter_px: 6
   click_delay_min_ms: 450

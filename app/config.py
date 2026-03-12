@@ -80,6 +80,8 @@ class VisionConfig:
 
 @dataclass(slots=True)
 class ControlConfig:
+    bite_action_mode: str = "mouse"
+    interaction_key: str = "F12"
     move_duration_ms: int = 35
     jitter_px: int = 6
     click_delay_min_ms: int = 450

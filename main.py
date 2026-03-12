@@ -19,7 +19,7 @@ from app.audio import (
     list_loopback_speakers,
 )
 from app.capture import ScreenCapture
-from app.config import AppConfig, load_config
+from app.config import AppConfig, ControlConfig, load_config
 from app.input_control import MouseController
 from app.vision import BobberDetector, Detection, ModelManager
 
@@ -65,6 +65,28 @@ def _cast_has_timed_out(
     if cast_started_at_ms is None:
         return False
     return (now_ms - cast_started_at_ms) >= max(0, max_cast_lifetime_ms)
+
+
+def _normalize_bite_action_mode(mode: str) -> str:
+    normalized = str(mode).strip().lower().replace("-", "_")
+    if normalized in {"mouse", "mouse_right_click", "right_click"}:
+        return "mouse"
+    if normalized in {"interact_hotkey", "interaction_hotkey", "interaction_key", "hotkey"}:
+        return "interact_hotkey"
+    raise ValueError(
+        "unsupported control.bite_action_mode: "
+        f"{mode!r}; expected 'mouse' or 'interact_hotkey'"
+    )
+
+
+def _perform_bite_action(mouse: MouseController, cfg: ControlConfig) -> str:
+    mode = _normalize_bite_action_mode(cfg.bite_action_mode)
+    if mode == "mouse":
+        mouse.right_click()
+        return "mouse_right_click"
+
+    mouse.press_interaction_key()
+    return f"interaction_hotkey:{cfg.interaction_key.strip().upper()}"
 
 
 def _is_move_close_enough(
@@ -306,6 +328,7 @@ def command_run(cfg: AppConfig) -> None:
     vision.load()
     capture = ScreenCapture()
     mouse = MouseController(cfg.control)
+    bite_action_mode = _normalize_bite_action_mode(cfg.control.bite_action_mode)
     audio_source = WasapiLoopbackSource(cfg.audio)
     key_trigger = KeyOneTrigger()
     esc_trigger = EscTrigger()
@@ -322,6 +345,11 @@ def command_run(cfg: AppConfig) -> None:
     bobber_tracked = False
     auto_enabled = False
     needs_precast_cleanup = False
+
+    print(
+        f"[control] bite_action_mode={bite_action_mode} "
+        f"interaction_key={cfg.control.interaction_key}"
+    )
 
     def schedule_next_cast(now_ms: int, reason: str, extra_ms: int) -> None:
         nonlocal next_cast_at_ms
@@ -512,7 +540,8 @@ def command_run(cfg: AppConfig) -> None:
                     f"[audio-click] ts={audio_event.ts_ms} rms={audio_event.energy:.4f} "
                     f"th={audio_event.threshold:.4f} delay={delay_ms}ms"
                 )
-                mouse.right_click()
+                action_name = _perform_bite_action(mouse, cfg.control)
+                print(f"[audio-click] action={action_name}")
                 last_sound_click_ms = int(time.monotonic() * 1000)
                 bobber_tracked = False
                 needs_precast_cleanup = cfg.vision.enable_precast_cleanup

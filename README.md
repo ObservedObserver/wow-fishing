@@ -6,7 +6,7 @@
 - 监听按键 `1`，在你抛竿后延时截图
 - 用视觉模型识别鱼漂位置
 - 监听系统回放音频里的咬钩声音
-- 在检测到咬钩后自动右键收杆
+- 在检测到咬钩后自动执行收杆动作
 - 如果开启了自动循环，会在一段随机延时后再次抛竿
 
 当前仓库已经自带训练好的默认模型，不需要你自己先训练。
@@ -51,6 +51,26 @@ pip install -r requirements.txt
 ## 5. 启动前需要改什么
 
 主要看 [config.yaml](/Users/observedobserver/Documents/GitHub/fishing/config.yaml) 里的这几项：
+
+### `control.bite_action_mode`
+
+控制检测到咬钩声音后用哪种方式收杆：
+
+```yaml
+control:
+  bite_action_mode: mouse
+  interaction_key: F12
+```
+
+支持两个值：
+- `mouse`
+- `interact_hotkey`
+
+说明：
+- `mouse`：保持当前默认行为，定位鱼漂后用鼠标右键收杆
+- `interact_hotkey`：不点右键，直接按 `control.interaction_key`
+
+如果你在游戏里已经把“互动键”绑定成 `F12`，就把 `bite_action_mode` 改成 `interact_hotkey` 即可。
 
 ### `vision.template_dir`
 
@@ -189,6 +209,9 @@ python main.py --config config.yaml run
 
 - `[audio-click] ...`
   - 说明检测到咬钩声音，开始执行收杆
+
+- `[audio-click] action=...`
+  - 说明本次实际执行的是哪种收杆动作
 
 - `[cast] scheduled in ...`
   - 说明进入自动下一轮抛竿的等待阶段
