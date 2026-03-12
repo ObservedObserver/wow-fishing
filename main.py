@@ -67,6 +67,19 @@ def _cast_has_timed_out(
     return (now_ms - cast_started_at_ms) >= max(0, max_cast_lifetime_ms)
 
 
+def _is_move_close_enough(
+    actual_x: int,
+    actual_y: int,
+    target_x: int,
+    target_y: int,
+    jitter_px: int,
+) -> bool:
+    tolerance_px = max(12, max(0, jitter_px) + 8)
+    dx = actual_x - target_x
+    dy = actual_y - target_y
+    return (dx * dx + dy * dy) <= (tolerance_px * tolerance_px)
+
+
 def _synthetic_audio_frames(count: int, splash_idx: int) -> list[np.ndarray]:
     frames: list[np.ndarray] = []
     for i in range(count):
@@ -304,6 +317,8 @@ def command_run(cfg: AppConfig) -> None:
     cast_anchor_x: int | None = None
     cast_anchor_y: int | None = None
     cast_started_at_ms: int | None = None
+    cast_count = 0
+    last_anti_afk_cast_count = 0
     bobber_tracked = False
     auto_enabled = False
     needs_precast_cleanup = False
@@ -331,6 +346,7 @@ def command_run(cfg: AppConfig) -> None:
                 if not auto_enabled:
                     auto_enabled = True
                     print("[loop] activated by key 1")
+                cast_count += 1
                 pending_locate_at_ms = now_ms + cfg.timing.key_detect_delay_ms
                 pending_locate_attempt = 1
                 cast_anchor_x, cast_anchor_y = mouse.get_position()
@@ -340,7 +356,8 @@ def command_run(cfg: AppConfig) -> None:
                 next_cast_at_ms = None
                 print(
                     f"[key] detected 1 at ({cast_anchor_x}, {cast_anchor_y}), "
-                    f"schedule locate at +{cfg.timing.key_detect_delay_ms}ms"
+                    f"schedule locate at +{cfg.timing.key_detect_delay_ms}ms "
+                    f"cast_count={cast_count}"
                 )
 
             if auto_enabled and next_cast_at_ms is not None and now_ms >= next_cast_at_ms:
@@ -363,7 +380,26 @@ def command_run(cfg: AppConfig) -> None:
                             extra_ms=cfg.timing.precast_cleanup_delay_ms,
                         )
                         continue
+                if (
+                    cfg.timing.anti_afk_jump_every_casts > 0
+                    and cast_count > 0
+                    and (cast_count % cfg.timing.anti_afk_jump_every_casts) == 0
+                    and last_anti_afk_cast_count != cast_count
+                ):
+                    mouse.press_space()
+                    last_anti_afk_cast_count = cast_count
+                    schedule_next_cast(
+                        now_ms=now_ms,
+                        reason="anti_afk_jump",
+                        extra_ms=cfg.timing.anti_afk_jump_wait_ms,
+                    )
+                    print(
+                        f"[anti-afk] jumped after {cast_count} casts, "
+                        f"resume in {cfg.timing.anti_afk_jump_wait_ms}ms"
+                    )
+                    continue
                 mouse.press_key_1()
+                cast_count += 1
                 cast_anchor_x, cast_anchor_y = mouse.get_position()
                 cast_started_at_ms = now_ms
                 pending_locate_at_ms = now_ms + cfg.timing.key_detect_delay_ms
@@ -373,7 +409,7 @@ def command_run(cfg: AppConfig) -> None:
                 needs_precast_cleanup = False
                 print(
                     f"[cast] key1 triggered at ({cast_anchor_x}, {cast_anchor_y}), "
-                    f"locate in {cfg.timing.key_detect_delay_ms}ms"
+                    f"locate in {cfg.timing.key_detect_delay_ms}ms cast_count={cast_count}"
                 )
 
             if pending_locate_at_ms is not None and now_ms >= pending_locate_at_ms:
@@ -391,17 +427,28 @@ def command_run(cfg: AppConfig) -> None:
                 )
                 if accepted and det is not None:
                     moved_x, moved_y = mouse.move_to(det.x, det.y)
-                    cast_anchor_x, cast_anchor_y = moved_x, moved_y
+                    if _is_move_close_enough(
+                        actual_x=moved_x,
+                        actual_y=moved_y,
+                        target_x=det.x,
+                        target_y=det.y,
+                        jitter_px=cfg.control.jitter_px,
+                    ):
+                        cast_anchor_x, cast_anchor_y = moved_x, moved_y
+                        print(
+                            f"[key-move] moved target=({det.x}, {det.y}) actual=({moved_x}, {moved_y}) "
+                            f"conf={det.conf:.3f} source={det.source} attempt={pending_locate_attempt} "
+                            f"hits={hit_count}/{_LOCATE_CONFIRM_FRAMES}"
+                        )
+                        pending_locate_at_ms = None
+                        pending_locate_attempt = 0
+                        bobber_tracked = True
+                        time.sleep(frame_interval_s)
+                        continue
                     print(
-                        f"[key-move] moved to ({moved_x}, {moved_y}) "
-                        f"conf={det.conf:.3f} source={det.source} attempt={pending_locate_attempt} "
-                        f"hits={hit_count}/{_LOCATE_CONFIRM_FRAMES}"
+                        f"[key-move] move verify failed target=({det.x}, {det.y}) "
+                        f"actual=({moved_x}, {moved_y}) attempt={pending_locate_attempt}"
                     )
-                    pending_locate_at_ms = None
-                    pending_locate_attempt = 0
-                    bobber_tracked = True
-                    time.sleep(frame_interval_s)
-                    continue
                 else:
                     if pending_locate_attempt < max(1, cfg.timing.key_retry_max_attempts):
                         pending_locate_attempt += 1
@@ -532,10 +579,22 @@ def command_mouse_test(cfg: AppConfig, seconds: int) -> None:
             abs_x = det.x + shot.left
             abs_y = det.y + shot.top
             moved_x, moved_y = mouse.move_to(abs_x, abs_y)
-            print(
-                f"[mouse-test] moved to ({moved_x}, {moved_y}) "
-                f"after {delay_ms}ms conf={det.conf:.3f} source={det.source}"
-            )
+            if _is_move_close_enough(
+                actual_x=moved_x,
+                actual_y=moved_y,
+                target_x=abs_x,
+                target_y=abs_y,
+                jitter_px=cfg.control.jitter_px,
+            ):
+                print(
+                    f"[mouse-test] moved target=({abs_x}, {abs_y}) actual=({moved_x}, {moved_y}) "
+                    f"after {delay_ms}ms conf={det.conf:.3f} source={det.source}"
+                )
+            else:
+                print(
+                    f"[mouse-test] move verify failed target=({abs_x}, {abs_y}) "
+                    f"actual=({moved_x}, {moved_y}) after {delay_ms}ms"
+                )
             last_bite_ms = audio_event.ts_ms
             time.sleep(frame_interval_s)
     finally:

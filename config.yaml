@@ -24,6 +24,8 @@ timing:
   bite_window_end_ms: 26000
   max_cast_lifetime_ms: 30000
   click_cooldown_ms: 1200
+  anti_afk_jump_every_casts: 1000
+  anti_afk_jump_wait_ms: 5000
 
 vision:
   model_url: "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.onnx"
