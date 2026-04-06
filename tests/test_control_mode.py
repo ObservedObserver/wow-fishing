@@ -1,5 +1,10 @@
-from app.config import ControlConfig
-from main import _normalize_bite_action_mode, _perform_bite_action
+from app.config import AppConfig, ControlConfig
+from main import (
+    _delay_next_cast_for_slot2,
+    _normalize_bite_action_mode,
+    _perform_bite_action,
+    _roll_slot2_interval_ms,
+)
 
 
 class _FakeMouse:
@@ -39,3 +44,18 @@ def test_perform_bite_action_uses_interaction_hotkey() -> None:
 
     assert action == "interaction_hotkey:F12"
     assert mouse.actions == ["interaction_key"]
+
+
+def test_roll_slot2_interval_uses_base_plus_jitter(monkeypatch) -> None:
+    monkeypatch.setattr("main.random.randint", lambda low, high: 20_000)
+    cfg = AppConfig.default()
+
+    out = _roll_slot2_interval_ms(cfg)
+
+    assert out == 620_000
+
+
+def test_delay_next_cast_for_slot2_enforces_post_wait() -> None:
+    assert _delay_next_cast_for_slot2(5_000, now_ms=4_000, post_use_wait_ms=8_000) == 12_000
+    assert _delay_next_cast_for_slot2(20_000, now_ms=4_000, post_use_wait_ms=8_000) == 20_000
+    assert _delay_next_cast_for_slot2(None, now_ms=4_000, post_use_wait_ms=8_000) is None

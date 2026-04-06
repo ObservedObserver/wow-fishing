@@ -26,6 +26,10 @@ timing:
   click_cooldown_ms: 1200
   anti_afk_jump_every_casts: 1000
   anti_afk_jump_wait_ms: 5000
+  slot2_cycle_base_ms: 600000
+  slot2_cycle_jitter_min_ms: 15000
+  slot2_cycle_jitter_max_ms: 30000
+  slot2_post_use_wait_ms: 8000
 
 vision:
   model_url: "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.onnx"

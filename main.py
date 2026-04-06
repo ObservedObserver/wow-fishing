@@ -25,7 +25,9 @@ from app.vision import BobberDetector, Detection, ModelManager
 
 
 _VK_1 = 0x31
+_VK_2 = 0x32
 _VK_NUMPAD1 = 0x61
+_VK_NUMPAD2 = 0x62
 _VK_ESC = 0x1B
 _LOCATE_CONFIRM_FRAMES = 1
 _LOCATE_CONFIRM_INTERVAL_MS = 0
@@ -57,6 +59,20 @@ class EscTrigger:
         return edge
 
 
+class KeyTwoTrigger:
+    def __init__(self) -> None:
+        self.user32 = ctypes.windll.user32
+        self._prev_down = False
+
+    def poll_pressed_edge(self) -> bool:
+        down_2 = bool(self.user32.GetAsyncKeyState(_VK_2) & 0x8000)
+        down_num2 = bool(self.user32.GetAsyncKeyState(_VK_NUMPAD2) & 0x8000)
+        down = down_2 or down_num2
+        edge = down and not self._prev_down
+        self._prev_down = down
+        return edge
+
+
 def _cast_has_timed_out(
     now_ms: int,
     cast_started_at_ms: int | None,
@@ -65,6 +81,22 @@ def _cast_has_timed_out(
     if cast_started_at_ms is None:
         return False
     return (now_ms - cast_started_at_ms) >= max(0, max_cast_lifetime_ms)
+
+
+def _roll_slot2_interval_ms(cfg: AppConfig) -> int:
+    low = min(cfg.timing.slot2_cycle_jitter_min_ms, cfg.timing.slot2_cycle_jitter_max_ms)
+    high = max(cfg.timing.slot2_cycle_jitter_min_ms, cfg.timing.slot2_cycle_jitter_max_ms)
+    return max(0, cfg.timing.slot2_cycle_base_ms) + random.randint(max(0, low), max(0, high))
+
+
+def _delay_next_cast_for_slot2(
+    next_cast_at_ms: int | None,
+    now_ms: int,
+    post_use_wait_ms: int,
+) -> int | None:
+    if next_cast_at_ms is None:
+        return None
+    return max(next_cast_at_ms, now_ms + max(0, post_use_wait_ms))
 
 
 def _normalize_bite_action_mode(mode: str) -> str:
@@ -331,6 +363,7 @@ def command_run(cfg: AppConfig) -> None:
     bite_action_mode = _normalize_bite_action_mode(cfg.control.bite_action_mode)
     audio_source = WasapiLoopbackSource(cfg.audio)
     key_trigger = KeyOneTrigger()
+    key_two_trigger = KeyTwoTrigger()
     esc_trigger = EscTrigger()
     frame_interval_s = cfg.audio.frame_ms / 1000.0
     pending_locate_at_ms: int | None = None
@@ -345,6 +378,7 @@ def command_run(cfg: AppConfig) -> None:
     bobber_tracked = False
     auto_enabled = False
     needs_precast_cleanup = False
+    slot2_next_at_ms: int | None = None
 
     print(
         f"[control] bite_action_mode={bite_action_mode} "
@@ -388,7 +422,37 @@ def command_run(cfg: AppConfig) -> None:
                     f"cast_count={cast_count}"
                 )
 
+            if key_two_trigger.poll_pressed_edge():
+                slot2_next_at_ms = now_ms + _roll_slot2_interval_ms(cfg)
+                next_cast_at_ms = _delay_next_cast_for_slot2(
+                    next_cast_at_ms=next_cast_at_ms,
+                    now_ms=now_ms,
+                    post_use_wait_ms=cfg.timing.slot2_post_use_wait_ms,
+                )
+                print(
+                    "[slot2] manual trigger detected, "
+                    f"next auto-use at +{max(0, slot2_next_at_ms - now_ms)}ms"
+                )
+                if next_cast_at_ms is not None:
+                    print(
+                        "[slot2] delayed next cast to keep post-buff wait "
+                        f"for {cfg.timing.slot2_post_use_wait_ms}ms"
+                    )
+
             if auto_enabled and next_cast_at_ms is not None and now_ms >= next_cast_at_ms:
+                if slot2_next_at_ms is not None and now_ms >= slot2_next_at_ms:
+                    mouse.press_key_2()
+                    slot2_triggered_at_ms = int(time.monotonic() * 1000)
+                    slot2_next_at_ms = slot2_triggered_at_ms + _roll_slot2_interval_ms(cfg)
+                    next_cast_at_ms = (
+                        slot2_triggered_at_ms + max(0, cfg.timing.slot2_post_use_wait_ms)
+                    )
+                    print(
+                        "[slot2] auto-used key 2, "
+                        f"next auto-use in {max(0, slot2_next_at_ms - slot2_triggered_at_ms)}ms "
+                        f"resume cast in {cfg.timing.slot2_post_use_wait_ms}ms"
+                    )
+                    continue
                 if cfg.vision.enable_precast_cleanup and needs_precast_cleanup:
                     cleaned, cleaned_x, cleaned_y = _clear_lingering_bobber_before_cast(
                         vision=vision,

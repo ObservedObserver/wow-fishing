@@ -12,6 +12,7 @@ _MOUSEEVENTF_RIGHTDOWN = 0x0008
 _MOUSEEVENTF_RIGHTUP = 0x0010
 _KEYEVENTF_KEYUP = 0x0002
 _VK_1 = 0x31
+_VK_2 = 0x32
 _VK_SPACE = 0x20
 _MOVE_VERIFY_TOLERANCE_PX = 3
 _RIGHT_CLICK_RESET_DELAY_S = 0.01
@@ -65,6 +66,9 @@ class MouseController:
 
     def press_key_1(self) -> None:
         self._press_vk(_VK_1)
+
+    def press_key_2(self) -> None:
+        self._press_vk(_VK_2)
 
     def press_space(self) -> None:
         self._press_vk(_VK_SPACE)

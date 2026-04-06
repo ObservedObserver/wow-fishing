@@ -177,6 +177,7 @@ python main.py --config config.yaml run
 
 运行后：
 - 按一次 `1`：激活循环
+- 手动按一次 `2`：启动 2 号位道具的内部计时器
 - 按 `ESC`：暂停循环
 
 ## 7. 推荐的首次启动流程
@@ -215,6 +216,9 @@ python main.py --config config.yaml run
 
 - `[cast] scheduled in ...`
   - 说明进入自动下一轮抛竿的等待阶段
+
+- `[slot2] ...`
+  - 说明检测到你手动用了 2 号位，或者程序在下一轮抛竿前自动补了一次 2 号位道具
 
 ## 9. 常见问题
 

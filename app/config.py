@@ -38,6 +38,10 @@ class TimingConfig:
     click_cooldown_ms: int = 1_200
     anti_afk_jump_every_casts: int = 1_000
     anti_afk_jump_wait_ms: int = 5_000
+    slot2_cycle_base_ms: int = 600_000
+    slot2_cycle_jitter_min_ms: int = 15_000
+    slot2_cycle_jitter_max_ms: int = 30_000
+    slot2_post_use_wait_ms: int = 8_000
 
 
 @dataclass(slots=True)
