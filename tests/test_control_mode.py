@@ -1,8 +1,8 @@
 from app.config import AppConfig, ControlConfig
 from main import (
-    _delay_next_cast_for_slot2,
     _normalize_bite_action_mode,
     _perform_bite_action,
+    _prime_slot2_timer,
     _roll_slot2_interval_ms,
 )
 
@@ -55,7 +55,11 @@ def test_roll_slot2_interval_uses_base_plus_jitter(monkeypatch) -> None:
     assert out == 620_000
 
 
-def test_delay_next_cast_for_slot2_enforces_post_wait() -> None:
-    assert _delay_next_cast_for_slot2(5_000, now_ms=4_000, post_use_wait_ms=8_000) == 12_000
-    assert _delay_next_cast_for_slot2(20_000, now_ms=4_000, post_use_wait_ms=8_000) == 20_000
-    assert _delay_next_cast_for_slot2(None, now_ms=4_000, post_use_wait_ms=8_000) is None
+def test_prime_slot2_timer_sets_next_slot2_and_post_wait(monkeypatch) -> None:
+    monkeypatch.setattr("main.random.randint", lambda low, high: 20_000)
+    cfg = AppConfig.default()
+
+    next_slot2_at_ms, next_cast_at_ms = _prime_slot2_timer(now_ms=4_000, cfg=cfg)
+
+    assert next_slot2_at_ms == 624_000
+    assert next_cast_at_ms == 12_000
