@@ -29,7 +29,7 @@ timing:
   slot2_cycle_base_ms: 600000
   slot2_cycle_jitter_min_ms: 15000
   slot2_cycle_jitter_max_ms: 30000
-  slot2_after_reel_delay_ms: 350
+  slot2_after_reel_delay_ms: 1000
   slot2_post_use_wait_ms: 8000
 
 vision:
@@ -71,5 +71,7 @@ control:
   interaction_key: F12
   move_duration_ms: 35
   jitter_px: 6
+  key_press_hold_ms: 30
+  slot2_key_press_hold_ms: 80
   click_delay_min_ms: 450
   click_delay_max_ms: 650

@@ -71,4 +71,4 @@ def test_prime_slot2_after_reel_uses_settle_delay() -> None:
 
     next_slot2_at_ms = _prime_slot2_after_reel(now_ms=4_000, cfg=cfg)
 
-    assert next_slot2_at_ms == 4_350
+    assert next_slot2_at_ms == 5_000

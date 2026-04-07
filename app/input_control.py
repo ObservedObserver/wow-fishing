@@ -65,16 +65,19 @@ class MouseController:
         self._mouse_event(_MOUSEEVENTF_RIGHTUP, 0, 0)
 
     def press_key_1(self) -> None:
-        self._press_vk(_VK_1)
+        self._press_vk(_VK_1, hold_ms=self.cfg.key_press_hold_ms)
 
     def press_key_2(self) -> None:
-        self._press_vk(_VK_2)
+        self._press_vk(_VK_2, hold_ms=self.cfg.slot2_key_press_hold_ms)
 
     def press_space(self) -> None:
-        self._press_vk(_VK_SPACE)
+        self._press_vk(_VK_SPACE, hold_ms=self.cfg.key_press_hold_ms)
 
     def press_interaction_key(self) -> None:
-        self._press_vk(_virtual_key_from_name(self.cfg.interaction_key))
+        self._press_vk(
+            _virtual_key_from_name(self.cfg.interaction_key),
+            hold_ms=self.cfg.key_press_hold_ms,
+        )
 
     def _move_smooth(self, target_x: int, target_y: int) -> tuple[int, int]:
         start_x, start_y = self.get_position()
@@ -105,9 +108,9 @@ class MouseController:
     def _mouse_event(self, flags: int, dx: int, dy: int) -> None:
         self.user32.mouse_event(flags, dx, dy, 0, 0)
 
-    def _press_vk(self, vk_code: int) -> None:
+    def _press_vk(self, vk_code: int, hold_ms: int = 30) -> None:
         self.user32.keybd_event(vk_code, 0, 0, 0)
-        time.sleep(0.03)
+        time.sleep(max(0, hold_ms) / 1000.0)
         self.user32.keybd_event(vk_code, 0, _KEYEVENTF_KEYUP, 0)
 
 

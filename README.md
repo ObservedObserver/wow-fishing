@@ -72,6 +72,18 @@ control:
 
 如果你在游戏里已经把“互动键”绑定成 `F12`，就把 `bite_action_mode` 改成 `interact_hotkey` 即可。
 
+### `control.slot2_key_press_hold_ms`
+
+首轮收竿后补的 `2`，现在会用一个单独的按键按住时长，默认比普通按键更长：
+
+```yaml
+control:
+  key_press_hold_ms: 30
+  slot2_key_press_hold_ms: 80
+```
+
+原因很直接：代码里后续自动抛竿之所以能继续，说明程序大概率已经走到了“补 2”的分支；真正不稳的是“按了 2”不等于游戏一定吃到了这个输入。这个参数就是专门用来把 `2` 发得更稳。
+
 ### `vision.template_dir`
 
 这里填你的模板图片目录。Windows 下建议改成你自己的真实路径，例如：
@@ -221,14 +233,15 @@ python main.py --config config.yaml run
 
 ### `timing.slot2_after_reel_delay_ms`
 
-第一次收杆后，不会立刻补 `2`，而是先等一个很短的动作稳定时间，默认 `350ms`：
+第一次收杆后，不会立刻补 `2`，而是先等一个动作稳定时间，默认 `1000ms`：
 
 ```yaml
 timing:
-  slot2_after_reel_delay_ms: 350
+  slot2_after_reel_delay_ms: 1000
 ```
 
 这个值就是用来避免“收杆右键”和“鱼钩附魔”互相打断。
+如果你这边第一次收杆后仍然偶发不吃 `2`，可以继续往上调到 `1200` 或 `1500`。
 
 ## 9. 常见问题
 
