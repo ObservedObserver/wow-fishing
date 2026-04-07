@@ -41,6 +41,7 @@ class TimingConfig:
     slot2_cycle_base_ms: int = 600_000
     slot2_cycle_jitter_min_ms: int = 15_000
     slot2_cycle_jitter_max_ms: int = 30_000
+    slot2_after_reel_delay_ms: int = 350
     slot2_post_use_wait_ms: int = 8_000
 
 

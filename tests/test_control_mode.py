@@ -2,6 +2,7 @@ from app.config import AppConfig, ControlConfig
 from main import (
     _normalize_bite_action_mode,
     _perform_bite_action,
+    _prime_slot2_after_reel,
     _prime_slot2_timer,
     _roll_slot2_interval_ms,
 )
@@ -63,3 +64,11 @@ def test_prime_slot2_timer_sets_next_slot2_and_post_wait(monkeypatch) -> None:
 
     assert next_slot2_at_ms == 624_000
     assert next_cast_at_ms == 12_000
+
+
+def test_prime_slot2_after_reel_uses_settle_delay() -> None:
+    cfg = AppConfig.default()
+
+    next_slot2_at_ms = _prime_slot2_after_reel(now_ms=4_000, cfg=cfg)
+
+    assert next_slot2_at_ms == 4_350

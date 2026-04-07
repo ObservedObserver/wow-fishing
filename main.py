@@ -82,6 +82,10 @@ def _prime_slot2_timer(
     return next_slot2_at_ms, next_cast_at_ms
 
 
+def _prime_slot2_after_reel(now_ms: int, cfg: AppConfig) -> int:
+    return now_ms + max(0, cfg.timing.slot2_after_reel_delay_ms)
+
+
 def _normalize_bite_action_mode(mode: str) -> str:
     normalized = str(mode).strip().lower().replace("-", "_")
     if normalized in {"mouse", "mouse_right_click", "right_click"}:
@@ -362,6 +366,7 @@ def command_run(cfg: AppConfig) -> None:
     needs_precast_cleanup = False
     slot2_next_at_ms: int | None = None
     slot2_pending_after_first_reel = False
+    slot2_pending_use_at_ms: int | None = None
 
     print(
         f"[control] bite_action_mode={bite_action_mode} "
@@ -387,6 +392,7 @@ def command_run(cfg: AppConfig) -> None:
                 cast_started_at_ms = None
                 slot2_next_at_ms = None
                 slot2_pending_after_first_reel = False
+                slot2_pending_use_at_ms = None
                 print("[loop] paused by ESC")
 
             if key_trigger.poll_pressed_edge():
@@ -403,11 +409,27 @@ def command_run(cfg: AppConfig) -> None:
                 next_cast_at_ms = None
                 slot2_next_at_ms = None
                 slot2_pending_after_first_reel = True
+                slot2_pending_use_at_ms = None
                 print(
                     f"[key] detected 1 at ({cast_anchor_x}, {cast_anchor_y}), "
                     f"schedule locate at +{cfg.timing.key_detect_delay_ms}ms "
                     f"cast_count={cast_count}"
                 )
+
+            if auto_enabled and slot2_pending_use_at_ms is not None and now_ms >= slot2_pending_use_at_ms:
+                mouse.press_key_2()
+                slot2_triggered_at_ms = int(time.monotonic() * 1000)
+                slot2_next_at_ms, next_cast_at_ms = _prime_slot2_timer(
+                    now_ms=slot2_triggered_at_ms,
+                    cfg=cfg,
+                )
+                slot2_pending_use_at_ms = None
+                print(
+                    "[slot2] used key 2 after first reel, "
+                    f"next auto-use in {max(0, slot2_next_at_ms - slot2_triggered_at_ms)}ms "
+                    f"resume cast in {cfg.timing.slot2_post_use_wait_ms}ms"
+                )
+                continue
 
             if auto_enabled and next_cast_at_ms is not None and now_ms >= next_cast_at_ms:
                 if slot2_next_at_ms is not None and now_ms >= slot2_next_at_ms:
@@ -582,17 +604,14 @@ def command_run(cfg: AppConfig) -> None:
                 cast_started_at_ms = None
                 if auto_enabled:
                     if slot2_pending_after_first_reel:
-                        mouse.press_key_2()
-                        slot2_triggered_at_ms = int(time.monotonic() * 1000)
-                        slot2_next_at_ms, next_cast_at_ms = _prime_slot2_timer(
-                            now_ms=slot2_triggered_at_ms,
+                        slot2_pending_after_first_reel = False
+                        slot2_pending_use_at_ms = _prime_slot2_after_reel(
+                            now_ms=last_sound_click_ms,
                             cfg=cfg,
                         )
-                        slot2_pending_after_first_reel = False
                         print(
-                            "[slot2] used key 2 after first reel, "
-                            f"next auto-use in {max(0, slot2_next_at_ms - slot2_triggered_at_ms)}ms "
-                            f"resume cast in {cfg.timing.slot2_post_use_wait_ms}ms"
+                            "[slot2] queued key 2 after first reel, "
+                            f"execute in {max(0, slot2_pending_use_at_ms - last_sound_click_ms)}ms"
                         )
                     else:
                         schedule_next_cast(
