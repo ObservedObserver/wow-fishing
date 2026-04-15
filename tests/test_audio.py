@@ -1,5 +1,6 @@
 import numpy as np
 
+from app import audio
 from app.audio import SplashDetector
 from app.config import AudioConfig
 
@@ -18,3 +19,19 @@ def test_splash_detector_detects_burst() -> None:
     assert event is not None
     assert event.energy > event.threshold
 
+
+def test_soundcard_backend_disabled_on_numpy2(monkeypatch) -> None:
+    monkeypatch.setattr(audio, "sc", object())
+    monkeypatch.setattr(audio.np, "__version__", "2.1.0")
+
+    error = audio._soundcard_backend_error()
+
+    assert error is not None
+    assert "NumPy >=2" in error
+
+
+def test_soundcard_backend_allowed_before_numpy2(monkeypatch) -> None:
+    monkeypatch.setattr(audio, "sc", object())
+    monkeypatch.setattr(audio.np, "__version__", "1.26.4")
+
+    assert audio._soundcard_backend_error() is None

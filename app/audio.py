@@ -54,13 +54,20 @@ class WasapiLoopbackSource:
 
         backend = (config.backend or "auto").lower()
         try_soundcard = backend == "soundcard" or (backend == "auto" and config.input_device is None)
+        soundcard_error: str | None = None
         if try_soundcard:
-            try:
-                self._open_soundcard_loopback()
-                return
-            except Exception:
-                if backend == "soundcard":
-                    raise
+            soundcard_error = _soundcard_backend_error()
+            if soundcard_error is None:
+                try:
+                    self._open_soundcard_loopback()
+                    return
+                except Exception:
+                    if backend == "soundcard":
+                        raise
+            elif backend == "soundcard":
+                raise RuntimeError(soundcard_error)
+        if sd is None:
+            raise RuntimeError(soundcard_error or "sounddevice is not installed")
         self._stream = self._open_stream()
         self._stream.start()
         self.selected_backend = "sounddevice"
@@ -68,8 +75,6 @@ class WasapiLoopbackSource:
     def _open_soundcard_loopback(self) -> None:
         if sc is None:
             raise RuntimeError("soundcard is not installed")
-        # Compatibility fix for soundcard on NumPy >=2.
-        np.fromstring = np.frombuffer  # type: ignore[assignment]
         speaker = None
         if self._config.loopback_speaker_contains:
             key = self._config.loopback_speaker_contains.lower()
@@ -251,3 +256,22 @@ class SplashDetector:
             return AudioEvent(ts_ms=now_ms, energy=rms, threshold=threshold)
         return None
 
+
+def _numpy_major_version() -> int:
+    raw = str(getattr(np, "__version__", "0"))
+    major = raw.split(".", 1)[0]
+    try:
+        return int(major)
+    except ValueError:
+        return 0
+
+
+def _soundcard_backend_error() -> str | None:
+    if sc is None:
+        return "soundcard is not installed"
+    if _numpy_major_version() >= 2:
+        return (
+            "soundcard backend is disabled with NumPy >=2; "
+            "use the sounddevice backend or install a NumPy-2-compatible soundcard release"
+        )
+    return None

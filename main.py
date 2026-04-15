@@ -20,7 +20,9 @@ from app.audio import (
 )
 from app.capture import ScreenCapture
 from app.config import AppConfig, ControlConfig, load_config
+from app.event_log import get_event_logger, log_event
 from app.input_control import MouseController
+from app.state_machine import FishingStateMachine
 from app.vision import BobberDetector, Detection, ModelManager
 
 
@@ -29,6 +31,7 @@ _VK_NUMPAD1 = 0x61
 _VK_ESC = 0x1B
 _LOCATE_CONFIRM_FRAMES = 1
 _LOCATE_CONFIRM_INTERVAL_MS = 0
+LOGGER = get_event_logger("fishing.runtime")
 
 
 class KeyOneTrigger:
@@ -250,7 +253,13 @@ def _locate_stable_near_anchor(
                     source=model_det.source,
                 )
             else:
-                print("[vision] ONNX locate miss, falling back to template/ROI search")
+                log_event(
+                    LOGGER,
+                    "locate.onnx_miss",
+                    anchor_x=anchor_x,
+                    anchor_y=anchor_y,
+                    radius=radius,
+                )
 
         if det is None:
             shot = capture.grab_with_offset(preferred_x=anchor_x, preferred_y=anchor_y)
@@ -303,18 +312,24 @@ def _clear_lingering_bobber_before_cast(
     if det is None:
         return False, anchor_x, anchor_y
     if det.conf < min_conf:
-        print(
-            f"[precast-cleanup] skipped weak match conf={det.conf:.3f} "
-            f"min_conf={min_conf:.3f}"
+        log_event(
+            LOGGER,
+            "precast_cleanup.skipped_weak_match",
+            conf=round(det.conf, 4),
+            min_conf=round(min_conf, 4),
         )
         return False, anchor_x, anchor_y
 
     abs_x = det.x + shot.left
     abs_y = det.y + shot.top
     moved_x, moved_y = mouse.move_and_right_click(abs_x, abs_y)
-    print(
-        f"[precast-cleanup] clicked lingering bobber at ({moved_x}, {moved_y}) "
-        f"conf={det.conf:.3f} source={det.source}"
+    log_event(
+        LOGGER,
+        "precast_cleanup.clicked",
+        x=moved_x,
+        y=moved_y,
+        conf=round(det.conf, 4),
+        source=det.source,
     )
     return True, moved_x, moved_y
 
@@ -347,36 +362,40 @@ def command_run(cfg: AppConfig) -> None:
     vision.load()
     capture = ScreenCapture()
     mouse = MouseController(cfg.control)
+    machine = FishingStateMachine(cfg.timing, action_lock_ms=cfg.audio.bite_lock_ms)
     bite_action_mode = _normalize_bite_action_mode(cfg.control.bite_action_mode)
     audio_source = WasapiLoopbackSource(cfg.audio)
     key_trigger = KeyOneTrigger()
     esc_trigger = EscTrigger()
     frame_interval_s = cfg.audio.frame_ms / 1000.0
-    pending_locate_at_ms: int | None = None
-    pending_locate_attempt = 0
-    last_sound_click_ms = -10_000_000
     next_cast_at_ms: int | None = None
     cast_anchor_x: int | None = None
     cast_anchor_y: int | None = None
-    cast_started_at_ms: int | None = None
     cast_count = 0
     last_anti_afk_cast_count = 0
-    bobber_tracked = False
     auto_enabled = False
     needs_precast_cleanup = False
     slot2_next_at_ms: int | None = None
     slot2_pending_after_first_reel = False
     slot2_pending_use_at_ms: int | None = None
 
-    print(
-        f"[control] bite_action_mode={bite_action_mode} "
-        f"interaction_key={cfg.control.interaction_key}"
+    log_event(
+        LOGGER,
+        "runtime.control_mode",
+        bite_action_mode=bite_action_mode,
+        interaction_key=cfg.control.interaction_key,
     )
 
-    def schedule_next_cast(now_ms: int, reason: str, extra_ms: int) -> None:
+    def schedule_next_cast(now_ms: int, reason: str, extra_ms: int, cast_id: int | None = None) -> None:
         nonlocal next_cast_at_ms
         next_cast_at_ms = now_ms + max(0, extra_ms)
-        print(f"[cast] scheduled in {max(0, extra_ms)}ms reason={reason}")
+        log_event(
+            LOGGER,
+            "cast.scheduled",
+            cast_id=cast_id,
+            delay_ms=max(0, extra_ms),
+            reason=reason,
+        )
 
     try:
         while True:
@@ -385,35 +404,33 @@ def command_run(cfg: AppConfig) -> None:
             if esc_trigger.poll_pressed_edge():
                 auto_enabled = False
                 next_cast_at_ms = None
-                pending_locate_at_ms = None
-                pending_locate_attempt = 0
-                bobber_tracked = False
                 needs_precast_cleanup = False
-                cast_started_at_ms = None
+                machine.reset()
                 slot2_next_at_ms = None
                 slot2_pending_after_first_reel = False
                 slot2_pending_use_at_ms = None
-                print("[loop] paused by ESC")
+                log_event(LOGGER, "loop.paused")
 
             if key_trigger.poll_pressed_edge():
                 if not auto_enabled:
                     auto_enabled = True
-                    print("[loop] activated by key 1")
+                    log_event(LOGGER, "loop.activated")
                 cast_count += 1
-                pending_locate_at_ms = now_ms + cfg.timing.key_detect_delay_ms
-                pending_locate_attempt = 1
+                cast_id = machine.on_cast(now_ms)
                 cast_anchor_x, cast_anchor_y = mouse.get_position()
-                cast_started_at_ms = now_ms
-                bobber_tracked = False
                 needs_precast_cleanup = False
                 next_cast_at_ms = None
                 slot2_next_at_ms = None
                 slot2_pending_after_first_reel = True
                 slot2_pending_use_at_ms = None
-                print(
-                    f"[key] detected 1 at ({cast_anchor_x}, {cast_anchor_y}), "
-                    f"schedule locate at +{cfg.timing.key_detect_delay_ms}ms "
-                    f"cast_count={cast_count}"
+                log_event(
+                    LOGGER,
+                    "cast.manual_started",
+                    cast_id=cast_id,
+                    anchor_x=cast_anchor_x,
+                    anchor_y=cast_anchor_y,
+                    locate_delay_ms=cfg.timing.key_detect_delay_ms,
+                    cast_count=cast_count,
                 )
 
             if auto_enabled and slot2_pending_use_at_ms is not None and now_ms >= slot2_pending_use_at_ms:
@@ -424,10 +441,11 @@ def command_run(cfg: AppConfig) -> None:
                     cfg=cfg,
                 )
                 slot2_pending_use_at_ms = None
-                print(
-                    "[slot2] used key 2 after first reel, "
-                    f"next auto-use in {max(0, slot2_next_at_ms - slot2_triggered_at_ms)}ms "
-                    f"resume cast in {cfg.timing.slot2_post_use_wait_ms}ms"
+                log_event(
+                    LOGGER,
+                    "slot2.used_after_first_reel",
+                    next_auto_use_in_ms=max(0, slot2_next_at_ms - slot2_triggered_at_ms),
+                    resume_cast_in_ms=cfg.timing.slot2_post_use_wait_ms,
                 )
                 continue
 
@@ -439,10 +457,11 @@ def command_run(cfg: AppConfig) -> None:
                         now_ms=slot2_triggered_at_ms,
                         cfg=cfg,
                     )
-                    print(
-                        "[slot2] auto-used key 2, "
-                        f"next auto-use in {max(0, slot2_next_at_ms - slot2_triggered_at_ms)}ms "
-                        f"resume cast in {cfg.timing.slot2_post_use_wait_ms}ms"
+                    log_event(
+                        LOGGER,
+                        "slot2.auto_used",
+                        next_auto_use_in_ms=max(0, slot2_next_at_ms - slot2_triggered_at_ms),
+                        resume_cast_in_ms=cfg.timing.slot2_post_use_wait_ms,
                     )
                     continue
                 if cfg.vision.enable_precast_cleanup and needs_precast_cleanup:
@@ -462,6 +481,7 @@ def command_run(cfg: AppConfig) -> None:
                             now_ms=now_ms,
                             reason="precast_cleanup",
                             extra_ms=cfg.timing.precast_cleanup_delay_ms,
+                            cast_id=machine.cast_id,
                         )
                         continue
                 if (
@@ -476,27 +496,33 @@ def command_run(cfg: AppConfig) -> None:
                         now_ms=now_ms,
                         reason="anti_afk_jump",
                         extra_ms=cfg.timing.anti_afk_jump_wait_ms,
+                        cast_id=machine.cast_id,
                     )
-                    print(
-                        f"[anti-afk] jumped after {cast_count} casts, "
-                        f"resume in {cfg.timing.anti_afk_jump_wait_ms}ms"
+                    log_event(
+                        LOGGER,
+                        "anti_afk.jump",
+                        cast_count=cast_count,
+                        resume_in_ms=cfg.timing.anti_afk_jump_wait_ms,
                     )
                     continue
                 mouse.press_key_1()
                 cast_count += 1
+                cast_id = machine.on_cast(now_ms)
                 cast_anchor_x, cast_anchor_y = mouse.get_position()
-                cast_started_at_ms = now_ms
-                pending_locate_at_ms = now_ms + cfg.timing.key_detect_delay_ms
-                pending_locate_attempt = 1
                 next_cast_at_ms = None
-                bobber_tracked = False
                 needs_precast_cleanup = False
-                print(
-                    f"[cast] key1 triggered at ({cast_anchor_x}, {cast_anchor_y}), "
-                    f"locate in {cfg.timing.key_detect_delay_ms}ms cast_count={cast_count}"
+                log_event(
+                    LOGGER,
+                    "cast.auto_started",
+                    cast_id=cast_id,
+                    anchor_x=cast_anchor_x,
+                    anchor_y=cast_anchor_y,
+                    locate_delay_ms=cfg.timing.key_detect_delay_ms,
+                    cast_count=cast_count,
                 )
 
-            if pending_locate_at_ms is not None and now_ms >= pending_locate_at_ms:
+            if machine.should_attempt_locate(now_ms):
+                locate_attempt = machine.locate_attempt
                 det, hit_count = _locate_stable_near_anchor(
                     vision=vision,
                     capture=capture,
@@ -519,106 +545,124 @@ def command_run(cfg: AppConfig) -> None:
                         jitter_px=cfg.control.jitter_px,
                     ):
                         cast_anchor_x, cast_anchor_y = moved_x, moved_y
-                        print(
-                            f"[key-move] moved target=({det.x}, {det.y}) actual=({moved_x}, {moved_y}) "
-                            f"conf={det.conf:.3f} source={det.source} attempt={pending_locate_attempt} "
-                            f"hits={hit_count}/{_LOCATE_CONFIRM_FRAMES}"
+                        machine.on_locate_success()
+                        log_event(
+                            LOGGER,
+                            "locate.success",
+                            cast_id=machine.cast_id,
+                            target_x=det.x,
+                            target_y=det.y,
+                            actual_x=moved_x,
+                            actual_y=moved_y,
+                            conf=round(det.conf, 4),
+                            source=det.source,
+                            attempt=locate_attempt,
+                            hit_count=hit_count,
                         )
-                        pending_locate_at_ms = None
-                        pending_locate_attempt = 0
-                        bobber_tracked = True
                         time.sleep(frame_interval_s)
                         continue
-                    print(
-                        f"[key-move] move verify failed target=({det.x}, {det.y}) "
-                        f"actual=({moved_x}, {moved_y}) attempt={pending_locate_attempt}"
+                    log_event(
+                        LOGGER,
+                        "locate.move_verify_failed",
+                        cast_id=machine.cast_id,
+                        target_x=det.x,
+                        target_y=det.y,
+                        actual_x=moved_x,
+                        actual_y=moved_y,
+                        attempt=locate_attempt,
+                    )
+                decision = machine.on_locate_failure(now_ms)
+                if decision.reason == "locate_retry":
+                    log_event(
+                        LOGGER,
+                        "locate.retry",
+                        cast_id=decision.cast_id,
+                        next_attempt=machine.locate_attempt,
+                        max_attempts=cfg.timing.key_retry_max_attempts,
+                        delay_ms=cfg.timing.key_retry_interval_ms,
+                        hit_count=hit_count,
                     )
                 else:
-                    if pending_locate_attempt < max(1, cfg.timing.key_retry_max_attempts):
-                        pending_locate_attempt += 1
-                        pending_locate_at_ms = now_ms + cfg.timing.key_retry_interval_ms
-                        print(
-                            f"[key-move] detect failed, retry {pending_locate_attempt}/"
-                            f"{cfg.timing.key_retry_max_attempts} in "
-                            f"{cfg.timing.key_retry_interval_ms}ms "
-                            f"(hits={hit_count}/{_LOCATE_CONFIRM_FRAMES})"
+                    log_event(
+                        LOGGER,
+                        "locate.failed",
+                        cast_id=decision.cast_id,
+                        max_attempts=cfg.timing.key_retry_max_attempts,
+                        hit_count=hit_count,
+                    )
+                    needs_precast_cleanup = False
+                    if decision.should_recast and auto_enabled:
+                        schedule_next_cast(
+                            now_ms=now_ms,
+                            reason="miss_recast",
+                            extra_ms=cfg.timing.recast_miss_delay_ms,
+                            cast_id=decision.cast_id,
                         )
-                    else:
-                        print(
-                            "[key-move] detect failed after max retries "
-                            f"(hits={hit_count}/{_LOCATE_CONFIRM_FRAMES})"
-                        )
-                        pending_locate_at_ms = None
-                        pending_locate_attempt = 0
-                        bobber_tracked = False
-                        needs_precast_cleanup = False
-                        cast_started_at_ms = None
-                        if cfg.timing.recast_on_miss:
-                            if auto_enabled:
-                                schedule_next_cast(
-                                    now_ms=now_ms,
-                                    reason="miss_recast",
-                                    extra_ms=cfg.timing.recast_miss_delay_ms,
-                                )
 
             audio_frame = audio_source.read_frame()
             audio_event = detector.update(audio_frame, now_ms=now_ms)
-            if bobber_tracked and _cast_has_timed_out(
-                now_ms=now_ms,
-                cast_started_at_ms=cast_started_at_ms,
-                max_cast_lifetime_ms=cfg.timing.max_cast_lifetime_ms,
-            ):
-                print(
-                    "[cast-timeout] no bite detected within "
-                    f"{cfg.timing.max_cast_lifetime_ms}ms, recasting"
+            decision = machine.update(now_ms=now_ms, audio_event=audio_event)
+            if decision.should_recast:
+                log_event(
+                    LOGGER,
+                    "cast.timeout",
+                    cast_id=decision.cast_id,
+                    max_cast_lifetime_ms=cfg.timing.max_cast_lifetime_ms,
                 )
-                bobber_tracked = False
                 needs_precast_cleanup = False
-                cast_started_at_ms = None
                 if auto_enabled:
                     schedule_next_cast(
                         now_ms=now_ms,
-                        reason="cast_timeout",
+                        reason=decision.reason,
                         extra_ms=cfg.timing.recast_miss_delay_ms,
+                        cast_id=decision.cast_id,
                     )
                 time.sleep(frame_interval_s)
                 continue
-            if (
-                bobber_tracked
-                and audio_event is not None
-                and (now_ms - last_sound_click_ms) >= cfg.audio.bite_lock_ms
-            ):
+            if decision.should_reel and audio_event is not None:
                 low = min(cfg.control.click_delay_min_ms, cfg.control.click_delay_max_ms)
                 high = max(cfg.control.click_delay_min_ms, cfg.control.click_delay_max_ms)
                 delay_ms = random.randint(max(0, low), max(0, high))
                 time.sleep(delay_ms / 1000.0)
-                print(
-                    f"[audio-click] ts={audio_event.ts_ms} rms={audio_event.energy:.4f} "
-                    f"th={audio_event.threshold:.4f} delay={delay_ms}ms"
+                log_event(
+                    LOGGER,
+                    "bite.audio_detected",
+                    cast_id=decision.cast_id,
+                    audio_ts_ms=audio_event.ts_ms,
+                    rms=round(audio_event.energy, 4),
+                    threshold=round(audio_event.threshold, 4),
+                    delay_ms=delay_ms,
                 )
                 action_name = _perform_bite_action(mouse, cfg.control)
-                print(f"[audio-click] action={action_name}")
-                last_sound_click_ms = int(time.monotonic() * 1000)
-                bobber_tracked = False
+                action_at_ms = int(time.monotonic() * 1000)
+                machine.on_reel(action_at_ms)
+                log_event(
+                    LOGGER,
+                    "bite.action",
+                    cast_id=decision.cast_id,
+                    action=action_name,
+                )
                 needs_precast_cleanup = cfg.vision.enable_precast_cleanup
-                cast_started_at_ms = None
                 if auto_enabled:
                     if slot2_pending_after_first_reel:
                         slot2_pending_after_first_reel = False
                         slot2_pending_use_at_ms = _prime_slot2_after_reel(
-                            now_ms=last_sound_click_ms,
+                            now_ms=action_at_ms,
                             cfg=cfg,
                         )
-                        print(
-                            "[slot2] queued key 2 after first reel, "
-                            f"execute in {max(0, slot2_pending_use_at_ms - last_sound_click_ms)}ms"
+                        log_event(
+                            LOGGER,
+                            "slot2.queued_after_first_reel",
+                            cast_id=decision.cast_id,
+                            execute_in_ms=max(0, slot2_pending_use_at_ms - action_at_ms),
                         )
                     else:
                         schedule_next_cast(
-                            now_ms=last_sound_click_ms,
+                            now_ms=action_at_ms,
                             reason="after_reel",
                             extra_ms=cfg.timing.auto_cast_base_ms
                             + random.randint(0, max(0, cfg.timing.auto_cast_jitter_max_ms)),
+                            cast_id=decision.cast_id,
                         )
             time.sleep(frame_interval_s)
     finally:

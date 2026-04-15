@@ -33,8 +33,9 @@ timing:
   slot2_post_use_wait_ms: 8000
 
 vision:
-  model_url: "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.onnx"
+  model_url: null
   model_path: "models/bobber.onnx"
+  model_sha256: "bab89e87f85f4672e53c0d04c570b111557179394c5313768c3182e79fd8f588"
   input_size: 640
   conf_threshold: 0.30
   onnx_class_ids: [0]

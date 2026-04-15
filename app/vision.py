@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import time
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from urllib.request import urlopen
 import numpy as np
 
 from app.config import VisionConfig
+from app.event_log import get_event_logger, log_event
 
 try:
     import cv2  # type: ignore
@@ -38,12 +40,43 @@ class ModelManager:
         model_path = Path(self.cfg.model_path)
         model_path.parent.mkdir(parents=True, exist_ok=True)
         if model_path.exists():
+            self._validate_model(model_path)
             return model_path
 
-        with urlopen(self.cfg.model_url, timeout=30) as response:
-            payload = response.read()
-        model_path.write_bytes(payload)
-        return model_path
+        if not self.cfg.model_url:
+            raise FileNotFoundError(
+                f"controlled model artifact missing at {model_path}; "
+                "set vision.model_url to a trusted artifact if you want auto-download"
+            )
+
+        tmp_path: Path | None = None
+        try:
+            with urlopen(self.cfg.model_url, timeout=30) as response:
+                payload = response.read()
+            with tempfile.NamedTemporaryFile(
+                dir=model_path.parent,
+                prefix=f"{model_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp_file:
+                tmp_file.write(payload)
+                tmp_path = Path(tmp_file.name)
+            self._validate_model(tmp_path)
+            tmp_path.replace(model_path)
+            return model_path
+        finally:
+            if tmp_path is not None and tmp_path.exists():
+                tmp_path.unlink()
+
+    def _validate_model(self, model_path: Path) -> None:
+        if not self.cfg.model_sha256:
+            return
+        digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
+        if digest != self.cfg.model_sha256:
+            raise ValueError(
+                f"model checksum mismatch for {model_path}: "
+                f"expected {self.cfg.model_sha256}, got {digest}"
+            )
 
 
 def _resolve_onnx_providers(cfg: VisionConfig) -> list[str]:
@@ -140,6 +173,7 @@ class BobberDetector:
 
     def __init__(self, cfg: VisionConfig) -> None:
         self.cfg = cfg
+        self._logger = get_event_logger("fishing.vision")
         self._session: Any | None = None
         self._input_name: str | None = None
         self._model_input_size: int | None = None
@@ -186,9 +220,14 @@ class BobberDetector:
                 self._templates_gray.append(tpl_gray)
                 self._templates_lab_ab.append((tpl_lab[:, :, 1], tpl_lab[:, :, 2]))
         if self._templates_gray:
-            print(f"[vision] loaded templates: {len(self._templates_gray)}")
+            log_event(self._logger, "vision.templates_loaded", count=len(self._templates_gray))
         elif self.cfg.template_dir or self.cfg.template_paths:
-            print("[vision] warning: template configured but no valid template image was loaded")
+            log_event(
+                self._logger,
+                "vision.templates_missing",
+                template_dir=self.cfg.template_dir,
+                template_paths=len(self.cfg.template_paths),
+            )
 
         if ort is None or cv2 is None:
             self._fallback_only = True
@@ -202,22 +241,23 @@ class BobberDetector:
             input_meta = self._session.get_inputs()[0]
             self._input_name = input_meta.name
             self._model_input_size = _resolve_fixed_square_input_size(input_meta.shape)
-            print(f"[vision] ONNX providers: {providers}")
+            log_event(self._logger, "vision.onnx_loaded", providers=providers)
             if (
                 self._model_input_size is not None
                 and self._model_input_size != int(self.cfg.input_size)
             ):
-                print(
-                    "[vision] warning: config input_size="
-                    f"{self.cfg.input_size} does not match model input="
-                    f"{self._model_input_size}; using model input size"
+                log_event(
+                    self._logger,
+                    "vision.input_size_mismatch",
+                    config_input_size=int(self.cfg.input_size),
+                    model_input_size=int(self._model_input_size),
                 )
         except Exception as exc:
             # Keep template/hsv path available even if model is unavailable.
             self._session = None
             self._input_name = None
             self._model_input_size = None
-            print(f"[vision] warning: model unavailable, continue without ONNX ({exc})")
+            log_event(self._logger, "vision.model_unavailable", error=str(exc))
 
     def has_onnx(self) -> bool:
         return (not self._fallback_only) and self._session is not None and cv2 is not None
@@ -301,15 +341,19 @@ class BobberDetector:
         if 0 < crop_h < frame_bgr.shape[0]:
             work = frame_bgr[:crop_h, :]
         if mode in {"combined", "onnx"} and self.has_onnx():
-            print(f"[vision] attempting ONNX detection mode={mode}")
             det = self._detect_onnx(work, preferred_x=preferred_x, preferred_y=preferred_y)
             if det is not None:
-                print(
-                    f"[vision] ONNX detection result: conf={det.conf:.3f} "
-                    f"x={det.x} y={det.y} source={det.source}"
+                log_event(
+                    self._logger,
+                    "vision.onnx_detection",
+                    mode=mode,
+                    conf=round(det.conf, 4),
+                    x=det.x,
+                    y=det.y,
+                    source=det.source,
                 )
                 return det
-            print("[vision] ONNX detection returned None")
+            log_event(self._logger, "vision.onnx_miss", mode=mode)
         if mode in {"combined", "template"} and cv2 is not None and self._templates_gray:
             det = self._detect_template(work)
             if det is not None:
@@ -438,14 +482,20 @@ class BobberDetector:
 
         selected_candidates = candidates
         if not selected_candidates and self.cfg.onnx_force_top1 and all_class_candidates:
-            print(
-                f"[vision] ONNX had no candidates above conf_threshold={self.cfg.conf_threshold}, "
-                "falling back to top1 candidate"
+            log_event(
+                self._logger,
+                "vision.onnx_top1_fallback",
+                conf_threshold=float(self.cfg.conf_threshold),
             )
             selected_candidates = all_class_candidates
 
         if not selected_candidates:
-            print(f"[vision] ONNX ran but no candidates for enabled classes above conf_threshold={self.cfg.conf_threshold}")
+            log_event(
+                self._logger,
+                "vision.onnx_no_candidates",
+                conf_threshold=float(self.cfg.conf_threshold),
+                enabled_classes=sorted(self._enabled_classes),
+            )
             return None
 
         kept = self._nms(selected_candidates, iou_threshold=0.45)
@@ -502,9 +552,12 @@ class BobberDetector:
             )
         path = debug_dir / f"model_input_{self._debug_save_counter:06d}_{ts}.png"
         cv2.imwrite(str(path), img_copy)
-        print(
-            f"[vision] debug: saved model input with top {len(top_bboxes)}/{len(all_bboxes)} "
-            f"bboxes to {path}"
+        log_event(
+            self._logger,
+            "vision.model_input_saved",
+            top_bbox_count=len(top_bboxes),
+            bbox_count=len(all_bboxes),
+            path=str(path),
         )
 
     def _candidate_score(

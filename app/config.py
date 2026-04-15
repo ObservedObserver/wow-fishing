@@ -47,10 +47,9 @@ class TimingConfig:
 
 @dataclass(slots=True)
 class VisionConfig:
-    model_url: str = (
-        "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.onnx"
-    )
+    model_url: str | None = None
     model_path: str = "models/bobber.onnx"
+    model_sha256: str | None = "bab89e87f85f4672e53c0d04c570b111557179394c5313768c3182e79fd8f588"
     input_size: int = 640
     conf_threshold: float = 0.55
     onnx_class_ids: tuple[int, ...] = (0,)
