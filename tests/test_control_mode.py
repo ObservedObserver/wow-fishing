@@ -1,10 +1,15 @@
-from app.config import AppConfig, ControlConfig
+from app.config import AppConfig, ControlConfig, SessionConfig
+from app.session import SessionScheduler
 from main import (
+    _max_runtime_ms,
     _normalize_bite_action_mode,
     _perform_bite_action,
     _prime_slot2_after_reel,
     _prime_slot2_timer,
+    _resume_after_session_break,
     _roll_slot2_interval_ms,
+    _runtime_limit_reached,
+    _schedule_resume_cast_at_ms,
 )
 
 
@@ -51,7 +56,7 @@ def test_roll_slot2_interval_uses_base_plus_jitter(monkeypatch) -> None:
     monkeypatch.setattr("main.random.randint", lambda low, high: 20_000)
     cfg = AppConfig.default()
 
-    out = _roll_slot2_interval_ms(cfg)
+    out = _roll_slot2_interval_ms(cfg, fatigue=None)
 
     assert out == 620_000
 
@@ -60,7 +65,9 @@ def test_prime_slot2_timer_sets_next_slot2_and_post_wait(monkeypatch) -> None:
     monkeypatch.setattr("main.random.randint", lambda low, high: 20_000)
     cfg = AppConfig.default()
 
-    next_slot2_at_ms, next_cast_at_ms = _prime_slot2_timer(now_ms=4_000, cfg=cfg)
+    next_slot2_at_ms, next_cast_at_ms = _prime_slot2_timer(
+        now_ms=4_000, cfg=cfg, fatigue=None
+    )
 
     assert next_slot2_at_ms == 624_000
     assert next_cast_at_ms == 12_000
@@ -72,3 +79,56 @@ def test_prime_slot2_after_reel_uses_settle_delay() -> None:
     next_slot2_at_ms = _prime_slot2_after_reel(now_ms=4_000, cfg=cfg)
 
     assert next_slot2_at_ms == 5_000
+
+
+def test_schedule_resume_cast_uses_initial_delay() -> None:
+    cfg = AppConfig.default()
+
+    next_cast_at_ms = _schedule_resume_cast_at_ms(now_ms=4_000, cfg=cfg)
+
+    assert next_cast_at_ms == 4_500
+
+
+def test_max_runtime_ms_uses_hours_from_config() -> None:
+    cfg = AppConfig.default()
+
+    assert _max_runtime_ms(cfg) == 9_000_000
+
+
+def test_runtime_limit_reached_only_after_threshold() -> None:
+    cfg = AppConfig.default()
+
+    assert _runtime_limit_reached(8_999_999, 0, cfg) is False
+    assert _runtime_limit_reached(9_000_000, 0, cfg) is True
+    assert _runtime_limit_reached(9_000_000, None, cfg) is False
+
+
+def test_resume_after_session_break_rearms_auto_cast_when_needed() -> None:
+    cfg = AppConfig.default()
+    session = SessionScheduler(SessionConfig(enabled=True))
+    session.snapshot_before_break_auto(True)
+
+    auto_enabled, next_cast_at_ms = _resume_after_session_break(
+        now_ms=4_000,
+        cfg=cfg,
+        session=session,
+    )
+
+    assert auto_enabled is True
+    assert next_cast_at_ms == 4_500
+    assert session.should_resume_auto() is False
+
+
+def test_resume_after_session_break_stays_idle_when_auto_was_off() -> None:
+    cfg = AppConfig.default()
+    session = SessionScheduler(SessionConfig(enabled=True))
+    session.snapshot_before_break_auto(False)
+
+    auto_enabled, next_cast_at_ms = _resume_after_session_break(
+        now_ms=4_000,
+        cfg=cfg,
+        session=session,
+    )
+
+    assert auto_enabled is False
+    assert next_cast_at_ms is None

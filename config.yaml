@@ -31,6 +31,7 @@ timing:
   slot2_cycle_jitter_max_ms: 30000
   slot2_after_reel_delay_ms: 1000
   slot2_post_use_wait_ms: 8000
+  max_runtime_hours: 2.5
 
 vision:
   model_url: null
@@ -70,9 +71,33 @@ vision:
 control:
   bite_action_mode: mouse
   interaction_key: F12
+  return_key: "4"
   move_duration_ms: 35
   jitter_px: 6
   key_press_hold_ms: 30
   slot2_key_press_hold_ms: 80
   click_delay_min_ms: 450
   click_delay_max_ms: 650
+  key_hold_min_ms: 40
+  key_hold_max_ms: 140
+  key_hold_sigma: 0.3
+  slot2_key_hold_min_ms: 60
+  slot2_key_hold_max_ms: 200
+  slot2_key_hold_sigma: 0.28
+  randomize_key_hold: false
+  randomize_mouse_click_timing: false
+
+humanize:
+  enabled: false
+
+session:
+  enabled: false
+
+mouse_path:
+  enabled: false
+
+noise:
+  enabled: false
+
+input:
+  backend: send_input

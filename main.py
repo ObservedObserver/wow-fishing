@@ -18,10 +18,13 @@ from app.audio import (
     list_input_devices,
     list_loopback_speakers,
 )
+from app.behavior_noise import BehaviorNoiseInjector, NoiseContext
 from app.capture import ScreenCapture
 from app.config import AppConfig, ControlConfig, load_config
 from app.event_log import get_event_logger, log_event
+from app.humanize import FatigueModel, HumanDelay
 from app.input_control import MouseController
+from app.session import SessionPhase, SessionScheduler
 from app.state_machine import FishingStateMachine
 from app.vision import BobberDetector, Detection, ModelManager
 
@@ -70,23 +73,64 @@ def _cast_has_timed_out(
     return (now_ms - cast_started_at_ms) >= max(0, max_cast_lifetime_ms)
 
 
-def _roll_slot2_interval_ms(cfg: AppConfig) -> int:
+def _roll_slot2_interval_ms(
+    cfg: AppConfig,
+    fatigue: FatigueModel | None,
+) -> int:
+    base = max(0, cfg.timing.slot2_cycle_base_ms)
+    if cfg.humanize.enabled and fatigue is not None:
+        jitter = fatigue.adjusted_sample(HumanDelay.slot2_jitter(cfg.humanize))
+        return base + jitter
     low = min(cfg.timing.slot2_cycle_jitter_min_ms, cfg.timing.slot2_cycle_jitter_max_ms)
     high = max(cfg.timing.slot2_cycle_jitter_min_ms, cfg.timing.slot2_cycle_jitter_max_ms)
-    return max(0, cfg.timing.slot2_cycle_base_ms) + random.randint(max(0, low), max(0, high))
+    return base + random.randint(max(0, low), max(0, high))
 
 
 def _prime_slot2_timer(
     now_ms: int,
     cfg: AppConfig,
+    fatigue: FatigueModel | None,
 ) -> tuple[int, int]:
-    next_slot2_at_ms = now_ms + _roll_slot2_interval_ms(cfg)
+    next_slot2_at_ms = now_ms + _roll_slot2_interval_ms(cfg, fatigue)
     next_cast_at_ms = now_ms + max(0, cfg.timing.slot2_post_use_wait_ms)
     return next_slot2_at_ms, next_cast_at_ms
 
 
 def _prime_slot2_after_reel(now_ms: int, cfg: AppConfig) -> int:
     return now_ms + max(0, cfg.timing.slot2_after_reel_delay_ms)
+
+
+def _schedule_resume_cast_at_ms(now_ms: int, cfg: AppConfig) -> int:
+    return now_ms + max(0, cfg.timing.auto_cast_initial_delay_ms)
+
+
+def _max_runtime_ms(cfg: AppConfig) -> int:
+    return int(max(0.0, cfg.timing.max_runtime_hours) * 3_600_000)
+
+
+def _runtime_limit_reached(
+    now_ms: int,
+    run_started_at_ms: int | None,
+    cfg: AppConfig,
+) -> bool:
+    if run_started_at_ms is None:
+        return False
+    limit_ms = _max_runtime_ms(cfg)
+    if limit_ms <= 0:
+        return False
+    return (now_ms - run_started_at_ms) >= limit_ms
+
+
+def _resume_after_session_break(
+    now_ms: int,
+    cfg: AppConfig,
+    session: SessionScheduler,
+) -> tuple[bool, int | None]:
+    should_resume = session.should_resume_auto()
+    session.snapshot_before_break_auto(False)
+    if not should_resume:
+        return False, None
+    return True, _schedule_resume_cast_at_ms(now_ms, cfg)
 
 
 def _normalize_bite_action_mode(mode: str) -> str:
@@ -361,7 +405,17 @@ def command_run(cfg: AppConfig) -> None:
     vision = BobberDetector(cfg.vision)
     vision.load()
     capture = ScreenCapture()
-    mouse = MouseController(cfg.control)
+    fatigue: FatigueModel | None = (
+        FatigueModel(cfg.humanize) if cfg.humanize.enabled else None
+    )
+    session = SessionScheduler(cfg.session)
+    mouse = MouseController(
+        cfg.control,
+        input_cfg=cfg.input,
+        mouse_path_cfg=cfg.mouse_path,
+        humanize_cfg=cfg.humanize,
+    )
+    noise_injector = BehaviorNoiseInjector(cfg.noise, mouse.backend)
     machine = FishingStateMachine(cfg.timing, action_lock_ms=cfg.audio.bite_lock_ms)
     bite_action_mode = _normalize_bite_action_mode(cfg.control.bite_action_mode)
     audio_source = WasapiLoopbackSource(cfg.audio)
@@ -378,12 +432,22 @@ def command_run(cfg: AppConfig) -> None:
     slot2_next_at_ms: int | None = None
     slot2_pending_after_first_reel = False
     slot2_pending_use_at_ms: int | None = None
+    run_started_at_ms: int | None = None
+    run_started_ms = int(time.monotonic() * 1000)
+    last_noise_ms = -1
+    casts_since_last_noise = 0
+    last_session_phase = SessionPhase.FISHING
 
     log_event(
         LOGGER,
         "runtime.control_mode",
         bite_action_mode=bite_action_mode,
         interaction_key=cfg.control.interaction_key,
+        humanize_enabled=cfg.humanize.enabled,
+        session_enabled=cfg.session.enabled,
+        noise_enabled=cfg.noise.enabled,
+        input_backend=cfg.input.backend,
+        mouse_path_enabled=cfg.mouse_path.enabled,
     )
 
     def schedule_next_cast(now_ms: int, reason: str, extra_ms: int, cast_id: int | None = None) -> None:
@@ -401,6 +465,82 @@ def command_run(cfg: AppConfig) -> None:
         while True:
             now_ms = int(time.monotonic() * 1000)
 
+            if _runtime_limit_reached(now_ms, run_started_at_ms, cfg):
+                mouse.press_return_key()
+                auto_enabled = False
+                next_cast_at_ms = None
+                needs_precast_cleanup = False
+                machine.reset()
+                slot2_next_at_ms = None
+                slot2_pending_after_first_reel = False
+                slot2_pending_use_at_ms = None
+                run_started_at_ms = None
+                if cfg.session.enabled:
+                    session.reset()
+                    last_session_phase = SessionPhase.FISHING
+                log_event(
+                    LOGGER,
+                    "loop.max_runtime_reached",
+                    elapsed_ms=_max_runtime_ms(cfg),
+                    return_key=cfg.control.return_key,
+                )
+                time.sleep(frame_interval_s)
+                continue
+
+            if cfg.session.enabled:
+                phase = session.check(now_ms)
+                if phase == SessionPhase.SESSION_END:
+                    if last_session_phase != phase:
+                        log_event(
+                            LOGGER,
+                            "session.macro_ended",
+                            total_fishing_ms=session.total_fishing_ms,
+                        )
+                        auto_enabled = False
+                        next_cast_at_ms = None
+                        needs_precast_cleanup = False
+                        machine.reset()
+                        slot2_next_at_ms = None
+                        slot2_pending_after_first_reel = False
+                        slot2_pending_use_at_ms = None
+                        run_started_at_ms = None
+                    last_session_phase = phase
+                elif phase != SessionPhase.FISHING:
+                    if last_session_phase != phase:
+                        session.snapshot_before_break_auto(auto_enabled)
+                        if auto_enabled:
+                            auto_enabled = False
+                            next_cast_at_ms = None
+                            needs_precast_cleanup = False
+                            machine.reset()
+                            slot2_next_at_ms = None
+                            slot2_pending_after_first_reel = False
+                            slot2_pending_use_at_ms = None
+                        log_event(
+                            LOGGER,
+                            "session.break",
+                            phase=phase.name,
+                        )
+                    last_session_phase = phase
+                    time.sleep(1.0)
+                    continue
+                if (
+                    last_session_phase != SessionPhase.FISHING
+                    and phase == SessionPhase.FISHING
+                ):
+                    auto_enabled, next_cast_at_ms = _resume_after_session_break(
+                        now_ms=now_ms,
+                        cfg=cfg,
+                        session=session,
+                    )
+                    if auto_enabled and next_cast_at_ms is not None:
+                        log_event(
+                            LOGGER,
+                            "session.resume_fishing",
+                            resume_in_ms=max(0, next_cast_at_ms - now_ms),
+                        )
+                last_session_phase = phase
+
             if esc_trigger.poll_pressed_edge():
                 auto_enabled = False
                 next_cast_at_ms = None
@@ -409,10 +549,17 @@ def command_run(cfg: AppConfig) -> None:
                 slot2_next_at_ms = None
                 slot2_pending_after_first_reel = False
                 slot2_pending_use_at_ms = None
+                run_started_at_ms = None
                 log_event(LOGGER, "loop.paused")
 
             if key_trigger.poll_pressed_edge():
+                if cfg.session.enabled and not session.active:
+                    session.start(now_ms)
+                    if cfg.humanize.enabled:
+                        fatigue = FatigueModel(cfg.humanize)
                 if not auto_enabled:
+                    if run_started_at_ms is None:
+                        run_started_at_ms = now_ms
                     auto_enabled = True
                     log_event(LOGGER, "loop.activated")
                 cast_count += 1
@@ -433,12 +580,17 @@ def command_run(cfg: AppConfig) -> None:
                     cast_count=cast_count,
                 )
 
+            if cfg.session.enabled and session.session_started and not session.active:
+                time.sleep(frame_interval_s)
+                continue
+
             if auto_enabled and slot2_pending_use_at_ms is not None and now_ms >= slot2_pending_use_at_ms:
                 mouse.press_key_2()
                 slot2_triggered_at_ms = int(time.monotonic() * 1000)
                 slot2_next_at_ms, next_cast_at_ms = _prime_slot2_timer(
                     now_ms=slot2_triggered_at_ms,
                     cfg=cfg,
+                    fatigue=fatigue,
                 )
                 slot2_pending_use_at_ms = None
                 log_event(
@@ -456,6 +608,7 @@ def command_run(cfg: AppConfig) -> None:
                     slot2_next_at_ms, next_cast_at_ms = _prime_slot2_timer(
                         now_ms=slot2_triggered_at_ms,
                         cfg=cfg,
+                        fatigue=fatigue,
                     )
                     log_event(
                         LOGGER,
@@ -485,7 +638,8 @@ def command_run(cfg: AppConfig) -> None:
                         )
                         continue
                 if (
-                    cfg.timing.anti_afk_jump_every_casts > 0
+                    not cfg.noise.enabled
+                    and cfg.timing.anti_afk_jump_every_casts > 0
                     and cast_count > 0
                     and (cast_count % cfg.timing.anti_afk_jump_every_casts) == 0
                     and last_anti_afk_cast_count != cast_count
@@ -622,7 +776,10 @@ def command_run(cfg: AppConfig) -> None:
             if decision.should_reel and audio_event is not None:
                 low = min(cfg.control.click_delay_min_ms, cfg.control.click_delay_max_ms)
                 high = max(cfg.control.click_delay_min_ms, cfg.control.click_delay_max_ms)
-                delay_ms = random.randint(max(0, low), max(0, high))
+                if cfg.humanize.enabled and fatigue is not None:
+                    delay_ms = fatigue.adjusted_sample(HumanDelay.bite_reaction(cfg.humanize))
+                else:
+                    delay_ms = random.randint(max(0, low), max(0, high))
                 time.sleep(delay_ms / 1000.0)
                 log_event(
                     LOGGER,
@@ -657,11 +814,36 @@ def command_run(cfg: AppConfig) -> None:
                             execute_in_ms=max(0, slot2_pending_use_at_ms - action_at_ms),
                         )
                     else:
+                        if cfg.humanize.enabled and fatigue is not None:
+                            extra_after = fatigue.adjusted_sample(
+                                HumanDelay.cast_interval(cfg.humanize)
+                            )
+                        else:
+                            extra_after = cfg.timing.auto_cast_base_ms + random.randint(
+                                0, max(0, cfg.timing.auto_cast_jitter_max_ms)
+                            )
+                        noise_ms = 0
+                        if cfg.noise.enabled:
+                            noise_ctx = NoiseContext(
+                                casts_since_last_noise=casts_since_last_noise,
+                                session_elapsed_ms=max(0, now_ms - run_started_ms),
+                                last_noise_ms=last_noise_ms,
+                            )
+                            noise_ms = noise_injector.maybe_inject(now_ms, noise_ctx)
+                            if noise_ms > 0:
+                                last_noise_ms = int(time.monotonic() * 1000)
+                                casts_since_last_noise = 0
+                                log_event(
+                                    LOGGER,
+                                    "noise.injected",
+                                    duration_ms=noise_ms,
+                                )
+                            else:
+                                casts_since_last_noise += 1
                         schedule_next_cast(
                             now_ms=action_at_ms,
                             reason="after_reel",
-                            extra_ms=cfg.timing.auto_cast_base_ms
-                            + random.randint(0, max(0, cfg.timing.auto_cast_jitter_max_ms)),
+                            extra_ms=extra_after + noise_ms,
                             cast_id=decision.cast_id,
                         )
             time.sleep(frame_interval_s)
@@ -678,7 +860,12 @@ def command_mouse_test(cfg: AppConfig, seconds: int) -> None:
     vision.load()
     capture = ScreenCapture()
     audio_source = WasapiLoopbackSource(cfg.audio)
-    mouse = MouseController(cfg.control)
+    mouse = MouseController(
+        cfg.control,
+        input_cfg=cfg.input,
+        mouse_path_cfg=cfg.mouse_path,
+        humanize_cfg=cfg.humanize,
+    )
 
     end_ts = time.monotonic() + max(1, seconds)
     frame_interval_s = cfg.audio.frame_ms / 1000.0

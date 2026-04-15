@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,7 @@ class TimingConfig:
     slot2_cycle_jitter_max_ms: int = 30_000
     slot2_after_reel_delay_ms: int = 1_000
     slot2_post_use_wait_ms: int = 8_000
+    max_runtime_hours: float = 2.5
 
 
 @dataclass(slots=True)
@@ -86,12 +87,108 @@ class VisionConfig:
 class ControlConfig:
     bite_action_mode: str = "mouse"
     interaction_key: str = "F12"
+    return_key: str = "4"
     move_duration_ms: int = 35
     jitter_px: int = 6
     key_press_hold_ms: int = 30
     slot2_key_press_hold_ms: int = 80
     click_delay_min_ms: int = 450
     click_delay_max_ms: int = 650
+    key_hold_min_ms: int = 40
+    key_hold_max_ms: int = 140
+    key_hold_sigma: float = 0.3
+    slot2_key_hold_min_ms: int = 60
+    slot2_key_hold_max_ms: int = 200
+    slot2_key_hold_sigma: float = 0.28
+    randomize_key_hold: bool = False
+    randomize_mouse_click_timing: bool = False
+
+
+@dataclass(slots=True)
+class HumanizeConfig:
+    enabled: bool = False
+
+    bite_reaction_median_ms: int = 520
+    bite_reaction_sigma: float = 0.35
+    bite_reaction_min_ms: int = 300
+    bite_reaction_max_ms: int = 1_200
+
+    cast_interval_median_ms: int = 4_750
+    cast_interval_sigma: float = 0.25
+    cast_interval_min_ms: int = 3_000
+    cast_interval_max_ms: int = 8_000
+
+    slot2_jitter_median_ms: int = 22_500
+    slot2_jitter_sigma: float = 0.2
+    slot2_jitter_min_ms: int = 15_000
+    slot2_jitter_max_ms: int = 30_000
+
+    fatigue_drift_per_hour: float = 0.08
+    fatigue_max_drift: float = 0.35
+    fatigue_spike_prob: float = 0.02
+    fatigue_spike_multiplier_min: float = 1.8
+    fatigue_spike_multiplier_max: float = 4.0
+
+
+@dataclass(slots=True)
+class SessionConfig:
+    enabled: bool = False
+
+    fishing_segment_median_min: int = 28
+    fishing_segment_min_min: int = 15
+    fishing_segment_max_min: int = 50
+
+    micro_break_min_s: int = 30
+    micro_break_max_s: int = 120
+
+    short_break_min_s: int = 120
+    short_break_max_s: int = 360
+    short_break_probability: float = 0.3
+
+    long_break_min_s: int = 480
+    long_break_max_s: int = 1_200
+    long_break_every: int = 3
+
+    max_session_min: int = 180
+
+
+@dataclass(slots=True)
+class MousePathConfig:
+    enabled: bool = False
+    target_width_px: int = 20
+    fitts_a_ms: float = 50.0
+    fitts_b_ms: float = 150.0
+    arc_sigma: float = 0.08
+    speed_gamma: float = 1.5
+    tremor_amplitude_px: float = 1.2
+    overshoot_prob: float = 0.18
+    overshoot_min_dist_px: float = 60.0
+    min_move_duration_ms: int = 50
+    max_move_duration_ms: int = 2_500
+
+
+@dataclass(slots=True)
+class NoiseConfig:
+    enabled: bool = False
+    base_probability: float = 0.08
+    cooldown_min_ms: int = 30_000
+    max_probability: float = 0.35
+    casts_scale_per_cast: float = 0.012
+    weights: dict[str, int] = field(
+        default_factory=lambda: {
+            "camera_pan": 3,
+            "toggle_bag": 2,
+            "short_walk": 1,
+            "jump": 2,
+            "idle_pause": 4,
+            "look_around": 2,
+        }
+    )
+
+
+@dataclass(slots=True)
+class InputConfig:
+    backend: str = "send_input"
 
 
 @dataclass(slots=True)
@@ -100,6 +197,11 @@ class AppConfig:
     timing: TimingConfig
     vision: VisionConfig
     control: ControlConfig
+    humanize: HumanizeConfig
+    session: SessionConfig
+    mouse_path: MousePathConfig
+    noise: NoiseConfig
+    input: InputConfig
 
     @staticmethod
     def default() -> "AppConfig":
@@ -108,6 +210,11 @@ class AppConfig:
             timing=TimingConfig(),
             vision=VisionConfig(),
             control=ControlConfig(),
+            humanize=HumanizeConfig(),
+            session=SessionConfig(),
+            mouse_path=MousePathConfig(),
+            noise=NoiseConfig(),
+            input=InputConfig(),
         )
 
 
@@ -140,4 +247,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         timing=TimingConfig(**merged["timing"]),
         vision=VisionConfig(**merged["vision"]),
         control=ControlConfig(**merged["control"]),
+        humanize=HumanizeConfig(**merged["humanize"]),
+        session=SessionConfig(**merged["session"]),
+        mouse_path=MousePathConfig(**merged["mouse_path"]),
+        noise=NoiseConfig(**merged["noise"]),
+        input=InputConfig(**merged["input"]),
     )
