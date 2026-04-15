@@ -27,7 +27,7 @@ class TimingConfig:
     key_retry_max_attempts: int = 3
     recast_on_miss: bool = True
     recast_miss_delay_ms: int = 300
-    auto_cast_base_ms: int = 4_000
+    auto_cast_base_ms: int = 2_000
     auto_cast_jitter_max_ms: int = 1_500
     auto_cast_initial_delay_ms: int = 500
     ignore_after_cast_ms: int = 900
@@ -43,6 +43,11 @@ class TimingConfig:
     slot2_cycle_jitter_max_ms: int = 30_000
     slot2_after_reel_delay_ms: int = 1_000
     slot2_post_use_wait_ms: int = 8_000
+    bag_cycle_base_ms: int = 180_000
+    bag_cycle_jitter_min_ms: int = 0
+    bag_cycle_jitter_max_ms: int = 60_000
+    bag_open_min_ms: int = 3_000
+    bag_open_max_ms: int = 5_000
     max_runtime_hours: float = 2.5
 
 
@@ -51,7 +56,7 @@ class VisionConfig:
     model_url: str | None = None
     model_path: str = "models/bobber.onnx"
     model_sha256: str | None = "bab89e87f85f4672e53c0d04c570b111557179394c5313768c3182e79fd8f588"
-    input_size: int = 640
+    input_size: int = 1280
     conf_threshold: float = 0.55
     onnx_class_ids: tuple[int, ...] = (0,)
     onnx_providers: tuple[str, ...] = ()
@@ -87,6 +92,7 @@ class VisionConfig:
 class ControlConfig:
     bite_action_mode: str = "mouse"
     interaction_key: str = "F12"
+    bag_key: str = "B"
     return_key: str = "4"
     move_duration_ms: int = 35
     jitter_px: int = 6

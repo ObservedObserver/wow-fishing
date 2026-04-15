@@ -100,6 +100,37 @@ def _prime_slot2_after_reel(now_ms: int, cfg: AppConfig) -> int:
     return now_ms + max(0, cfg.timing.slot2_after_reel_delay_ms)
 
 
+def _roll_bag_interval_ms(cfg: AppConfig) -> int:
+    base = max(0, cfg.timing.bag_cycle_base_ms)
+    low = min(cfg.timing.bag_cycle_jitter_min_ms, cfg.timing.bag_cycle_jitter_max_ms)
+    high = max(cfg.timing.bag_cycle_jitter_min_ms, cfg.timing.bag_cycle_jitter_max_ms)
+    return base + random.randint(max(0, low), max(0, high))
+
+
+def _prime_bag_timer(now_ms: int, cfg: AppConfig) -> int:
+    return now_ms + _roll_bag_interval_ms(cfg)
+
+
+def _roll_bag_open_duration_ms(cfg: AppConfig) -> int:
+    low = min(cfg.timing.bag_open_min_ms, cfg.timing.bag_open_max_ms)
+    high = max(cfg.timing.bag_open_min_ms, cfg.timing.bag_open_max_ms)
+    return random.randint(max(0, low), max(0, high))
+
+
+def _bag_timer_conflicts_with_slot2(
+    now_ms: int,
+    cfg: AppConfig,
+    slot2_next_at_ms: int | None,
+    slot2_pending_use_at_ms: int | None,
+) -> bool:
+    guard_ms = max(0, cfg.timing.bag_open_max_ms) + 1_000
+    if slot2_pending_use_at_ms is not None and slot2_pending_use_at_ms <= (now_ms + guard_ms):
+        return True
+    if slot2_next_at_ms is not None and slot2_next_at_ms <= (now_ms + guard_ms):
+        return True
+    return False
+
+
 def _schedule_resume_cast_at_ms(now_ms: int, cfg: AppConfig) -> int:
     return now_ms + max(0, cfg.timing.auto_cast_initial_delay_ms)
 
@@ -432,6 +463,7 @@ def command_run(cfg: AppConfig) -> None:
     slot2_next_at_ms: int | None = None
     slot2_pending_after_first_reel = False
     slot2_pending_use_at_ms: int | None = None
+    bag_next_at_ms: int | None = None
     run_started_at_ms: int | None = None
     run_started_ms = int(time.monotonic() * 1000)
     last_noise_ms = -1
@@ -474,6 +506,7 @@ def command_run(cfg: AppConfig) -> None:
                 slot2_next_at_ms = None
                 slot2_pending_after_first_reel = False
                 slot2_pending_use_at_ms = None
+                bag_next_at_ms = None
                 run_started_at_ms = None
                 if cfg.session.enabled:
                     session.reset()
@@ -503,6 +536,7 @@ def command_run(cfg: AppConfig) -> None:
                         slot2_next_at_ms = None
                         slot2_pending_after_first_reel = False
                         slot2_pending_use_at_ms = None
+                        bag_next_at_ms = None
                         run_started_at_ms = None
                     last_session_phase = phase
                 elif phase != SessionPhase.FISHING:
@@ -516,6 +550,7 @@ def command_run(cfg: AppConfig) -> None:
                             slot2_next_at_ms = None
                             slot2_pending_after_first_reel = False
                             slot2_pending_use_at_ms = None
+                            bag_next_at_ms = None
                         log_event(
                             LOGGER,
                             "session.break",
@@ -533,6 +568,8 @@ def command_run(cfg: AppConfig) -> None:
                         cfg=cfg,
                         session=session,
                     )
+                    if auto_enabled:
+                        bag_next_at_ms = _prime_bag_timer(now_ms=now_ms, cfg=cfg)
                     if auto_enabled and next_cast_at_ms is not None:
                         log_event(
                             LOGGER,
@@ -549,6 +586,7 @@ def command_run(cfg: AppConfig) -> None:
                 slot2_next_at_ms = None
                 slot2_pending_after_first_reel = False
                 slot2_pending_use_at_ms = None
+                bag_next_at_ms = None
                 run_started_at_ms = None
                 log_event(LOGGER, "loop.paused")
 
@@ -570,6 +608,7 @@ def command_run(cfg: AppConfig) -> None:
                 slot2_next_at_ms = None
                 slot2_pending_after_first_reel = True
                 slot2_pending_use_at_ms = None
+                bag_next_at_ms = _prime_bag_timer(now_ms=now_ms, cfg=cfg)
                 log_event(
                     LOGGER,
                     "cast.manual_started",
@@ -615,6 +654,34 @@ def command_run(cfg: AppConfig) -> None:
                         "slot2.auto_used",
                         next_auto_use_in_ms=max(0, slot2_next_at_ms - slot2_triggered_at_ms),
                         resume_cast_in_ms=cfg.timing.slot2_post_use_wait_ms,
+                    )
+                    continue
+                if bag_next_at_ms is not None and now_ms >= bag_next_at_ms:
+                    if _bag_timer_conflicts_with_slot2(
+                        now_ms=now_ms,
+                        cfg=cfg,
+                        slot2_next_at_ms=slot2_next_at_ms,
+                        slot2_pending_use_at_ms=slot2_pending_use_at_ms,
+                    ):
+                        bag_next_at_ms = _prime_bag_timer(now_ms=now_ms, cfg=cfg)
+                        log_event(
+                            LOGGER,
+                            "bag.auto_deferred_for_slot2",
+                            next_bag_in_ms=max(0, bag_next_at_ms - now_ms),
+                        )
+                        continue
+                    bag_open_ms = _roll_bag_open_duration_ms(cfg)
+                    mouse.press_bag_key()
+                    time.sleep(bag_open_ms / 1000.0)
+                    mouse.press_bag_key()
+                    bag_closed_at_ms = int(time.monotonic() * 1000)
+                    bag_next_at_ms = _prime_bag_timer(now_ms=bag_closed_at_ms, cfg=cfg)
+                    next_cast_at_ms = bag_closed_at_ms
+                    log_event(
+                        LOGGER,
+                        "bag.auto_toggled",
+                        open_duration_ms=bag_open_ms,
+                        next_bag_in_ms=max(0, bag_next_at_ms - bag_closed_at_ms),
                     )
                     continue
                 if cfg.vision.enable_precast_cleanup and needs_precast_cleanup:
@@ -814,6 +881,8 @@ def command_run(cfg: AppConfig) -> None:
                             execute_in_ms=max(0, slot2_pending_use_at_ms - action_at_ms),
                         )
                     else:
+                        if bag_next_at_ms is None:
+                            bag_next_at_ms = _prime_bag_timer(now_ms=action_at_ms, cfg=cfg)
                         if cfg.humanize.enabled and fatigue is not None:
                             extra_after = fatigue.adjusted_sample(
                                 HumanDelay.cast_interval(cfg.humanize)

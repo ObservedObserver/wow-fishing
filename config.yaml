@@ -15,7 +15,7 @@ timing:
   key_retry_max_attempts: 3
   recast_on_miss: true
   recast_miss_delay_ms: 300
-  auto_cast_base_ms: 4000
+  auto_cast_base_ms: 2000
   auto_cast_jitter_max_ms: 1500
   auto_cast_initial_delay_ms: 500
   ignore_after_cast_ms: 900
@@ -31,13 +31,18 @@ timing:
   slot2_cycle_jitter_max_ms: 30000
   slot2_after_reel_delay_ms: 1000
   slot2_post_use_wait_ms: 8000
+  bag_cycle_base_ms: 180000
+  bag_cycle_jitter_min_ms: 0
+  bag_cycle_jitter_max_ms: 60000
+  bag_open_min_ms: 3000
+  bag_open_max_ms: 5000
   max_runtime_hours: 2.5
 
 vision:
   model_url: null
   model_path: "models/bobber.onnx"
   model_sha256: "bab89e87f85f4672e53c0d04c570b111557179394c5313768c3182e79fd8f588"
-  input_size: 640
+  input_size: 1280
   conf_threshold: 0.30
   onnx_class_ids: [0]
   onnx_providers: []
@@ -71,6 +76,7 @@ vision:
 control:
   bite_action_mode: mouse
   interaction_key: F12
+  bag_key: B
   return_key: "4"
   move_duration_ms: 35
   jitter_px: 6

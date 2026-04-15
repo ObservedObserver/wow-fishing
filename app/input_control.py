@@ -115,6 +115,13 @@ class MouseController:
             slot2=False,
         )
 
+    def press_bag_key(self) -> None:
+        self._press_vk(
+            _virtual_key_from_name(self.cfg.bag_key),
+            hold_median_ms=self.cfg.key_press_hold_ms,
+            slot2=False,
+        )
+
     def press_return_key(self) -> None:
         self._press_vk(
             _virtual_key_from_name(self.cfg.return_key),
